@@ -47,6 +47,22 @@ for (const index of Array(27).keys()) {
   }
 }
 
+if (fs.existsSync('wappalyzer-custom-technologies.json')) {
+  const customJson = fs.readFileSync('wappalyzer-custom-technologies.json')
+  technologies = {
+    ...technologies,
+    ...JSON.parse(customJson.length ? customJson : '{}'),
+  }
+}
+
+if (fs.existsSync('wappalyzer-custom-categories.json')) {
+  const customJson = fs.readFileSync('wappalyzer-custom-categories.json')
+  const customCats = JSON.parse(customJson.length ? customJson : '{}')
+  for (const catId in customCats) {
+    categories[catId] = customCats[catId]
+  }
+}
+
 setTechnologies(technologies)
 setCategories(categories)
 
