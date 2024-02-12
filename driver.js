@@ -386,6 +386,7 @@ class Driver {
           })
         } else {
           this.browser = await puppeteer.launch({
+            headless: 'new',
             ignoreHTTPSErrors: true,
             acceptInsecureCerts: true,
             args: chromiumArgs,
