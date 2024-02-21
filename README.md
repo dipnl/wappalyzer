@@ -287,6 +287,12 @@ Plus any of:
       <td><code>{ "cookie_name": "Cookie value" }</code></td>
     </tr>
     <tr>
+      <td><code>cookieNames</code></td>
+      <td>Array</td>
+      <td>Cookie names.</td>
+      <td><code>[ "^_ga_[A-Z0-9]+\\;version:GA4" ]</code></td>
+    </tr>
+    <tr>
       <td><code>dom</code></td>
       <td>String | Array | Object</td>
       <td>

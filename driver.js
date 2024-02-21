@@ -461,6 +461,7 @@ class Driver {
           body: 'ok',
         })
       )
+      // await page._client().send('Network.clearBrowserCookies');
 
       await page.goto(url)
 
@@ -767,25 +768,16 @@ class Site {
       // page.on('console', (message) => this.log(message.text()))
 
       // Cookies
-      let cookies = []
-
+      let cookies = {}
+      let cookieNames = []
       try {
-        cookies = (await page.cookies()).reduce(
-          (cookies, { name, value }) => ({
-            ...cookies,
-            [name.toLowerCase()]: [value],
-          }),
-          {}
-        )
-
-        // Change Google Analytics 4 cookie from _ga_XXXXXXXXXX to _ga_*
-        Object.keys(cookies).forEach((name) => {
-          if (/_ga_[A-Z0-9]+/.test(name)) {
-            cookies['_ga_*'] = cookies[name]
-
-            delete cookies[name]
-          }
-        })
+        const cookieResponse = await page._client().send('Network.getAllCookies');
+        cookieResponse.cookies.forEach(cookie => {
+          cookies[cookie.name.toLowerCase()] = [cookie.value];
+          cookieNames.push(cookie.name);
+        });
+        // this.log(cookies);
+        this.log(cookieNames);
       } catch (error) {
         error.message += ` (${url})`
 
@@ -997,6 +989,7 @@ class Site {
         html,
         text,
         cookies,
+        cookieNames,
         scripts,
         scriptSrc,
         meta,
@@ -1010,6 +1003,7 @@ class Site {
           analyze({
             url,
             cookies,
+            cookieNames,
             html,
             text,
             css,
@@ -1119,6 +1113,13 @@ class Site {
       await this.initDriver()
 
       page = await this.browser.newPage()
+    }
+
+    try {
+      await page._client().send('Network.clearBrowserCookies');
+    }
+    catch (ex) {
+      this.log(ex);
     }
 
     this.pages.push(page)
@@ -1436,7 +1437,7 @@ class Site {
           if (!this.analyzedRequires[url.href].includes(id)) {
             this.analyzedRequires[url.href].push(id)
 
-            const { page, cookies, html, text, css, scripts, scriptSrc, meta } =
+            const { page, cookies, cookieNames, html, text, css, scripts, scriptSrc, meta } =
               this.cache[url.href]
 
             const js = await this.promiseTimeout(
@@ -1459,6 +1460,7 @@ class Site {
                   {
                     url,
                     cookies,
+                    cookieNames,
                     html,
                     text,
                     css,

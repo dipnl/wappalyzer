@@ -303,6 +303,7 @@ const Wappalyzer = {
     const relations = {
       certIssuer: oo,
       cookies: mm,
+      cookieNames: om,
       css: oo,
       dns: mm,
       headers: mm,
@@ -350,6 +351,7 @@ const Wappalyzer = {
         cats,
         certIssuer,
         cookies,
+        cookieNames,
         cpe,
         css,
         description,
@@ -379,6 +381,7 @@ const Wappalyzer = {
         categories: cats || [],
         certIssuer: transform(certIssuer),
         cookies: transform(cookies),
+        cookieNames: transform(cookieNames),
         cpe: cpe || null,
         css: transform(css),
         description: description || null,
