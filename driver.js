@@ -448,9 +448,17 @@ class Driver {
     const site = new Site(url.split('#')[0], headers, this)
 
     if (storage.local || storage.session) {
-      this.log('Setting storage...')
-
       const page = await site.newPage(site.originalUrl)
+
+      try {
+        this.log('Clearing cookies...');
+        await page._client().send('Network.clearBrowserCookies');
+      }
+      catch (ex) {
+        this.log(ex);
+      }
+
+      this.log('Setting storage...')
 
       await page.setRequestInterception(true)
 
@@ -1113,13 +1121,6 @@ class Site {
       await this.initDriver()
 
       page = await this.browser.newPage()
-    }
-
-    try {
-      await page._client().send('Network.clearBrowserCookies');
-    }
-    catch (ex) {
-      this.log(ex);
     }
 
     this.pages.push(page)
