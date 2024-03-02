@@ -1248,6 +1248,10 @@ class Site {
         })
       ),
       patterns,
+      cookieNames: Object.values(this.cache).map(cache => cache.cookieNames).flat().reduce((list, name) => {
+        if (!list.includes(name)) list.push(name);
+        return list;
+      }, []),
     }
 
     await this.emit('analyze', results)
