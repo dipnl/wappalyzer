@@ -647,7 +647,7 @@ class Site {
         if (
           (responseReceived && request.isNavigationRequest()) ||
           request.frame() !== page.mainFrame() ||
-          !['document', ...(this.options.noScripts ? [] : ['script'])].includes(
+          !['document', ...(this.options.noScripts ? [] : ['script']), 'fetch'].includes(
             request.resourceType()
           )
         ) {
