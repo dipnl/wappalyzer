@@ -623,7 +623,11 @@ class Site {
 
     page.on('request', async (request) => {
       try {
-        if (request.resourceType() === 'xhr') {
+        if ([
+        'xhr',
+        'fetch'
+        ].includes(request.resourceType())
+        ) {
           let hostname
 
           try {
@@ -660,9 +664,7 @@ class Site {
             'fetch',
             'xhr',
             ...(this.options.noScripts ? [] : ['script'])
-          ].includes(
-            request.resourceType()
-          )
+          ].includes(request.resourceType())
         ) {
           request.abort('blockedbyclient')
         } else {
