@@ -269,7 +269,7 @@ function getDom(page, technologies = Wappalyzer.technologies) {
 function analyzeDom(dom, technologies = Wappalyzer.technologies) {
   return dom
     .map(({ name, selector, exists, text, property, attribute, value }) => {
-      const technology = technologies.find(({ name: _name }) => name === _name)
+      const technology = technologies.find(tech => tech.name === name);
 
       if (typeof exists !== 'undefined') {
         return analyzeManyToMany(technology, 'dom.exists', {
@@ -447,7 +447,7 @@ class Driver {
   async open(url, headers = {}, storage = {}) {
     const site = new Site(url.split('#')[0], headers, this)
 
-    if (storage.local || storage.session) {
+    if (true) {
       const page = await site.newPage(site.originalUrl)
 
       try {
@@ -469,7 +469,6 @@ class Driver {
           body: 'ok',
         })
       )
-      // await page._client().send('Network.clearBrowserCookies');
 
       await page.goto(url)
 
@@ -499,20 +498,34 @@ class Driver {
   }
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class Site {
   constructor(url, headers = {}, driver) {
-    ;({
-      options: this.options,
-      browser: this.browser,
-      init: this.initDriver,
-    } = driver)
+    this.driver = driver;
 
-    this.options.headers = {
-      ...this.options.headers,
+    this.driver.options.headers = {
+      ...this.driver.options.headers,
       ...headers,
     }
-
-    this.driver = driver
 
     try {
       this.originalUrl = new URL(url)
@@ -535,7 +548,7 @@ class Site {
   }
 
   log(message, source = 'driver', type = 'log') {
-    if (this.options.debug) {
+    if (this.driver.options.debug) {
       // eslint-disable-next-line no-console
       console[type](`${type} | ${source} |`, message)
     }
@@ -567,9 +580,9 @@ class Site {
     promise,
     fallback,
     errorMessage = 'Operation took too long to complete',
-    maxWait = this.options.fast
-      ? Math.min(this.options.maxWait, 2000)
-      : this.options.maxWait
+    maxWait = this.driver.options.fast
+      ? Math.min(this.driver.options.maxWait, 2000)
+      : this.driver.options.maxWait
   ) {
     let timeout = null
 
@@ -646,7 +659,7 @@ class Site {
               if (!this.analyzedXhr[url.hostname].includes(hostname)) {
                 this.analyzedXhr[url.hostname].push(hostname)
 
-                await this.onDetect(url, analyze({ xhr: hostname }))
+                await this.onDetect(url, analyze({ xhr: hostname }), 'xhr')
               }
             }, 1000)
           }
@@ -655,7 +668,7 @@ class Site {
         if (
           (responseReceived && request.isNavigationRequest()) ||
           request.frame() !== page.mainFrame() ||
-          !['document', ...(this.options.noScripts ? [] : ['script'])].includes(
+          !['document', ...(this.driver.options.noScripts ? [] : ['script'])].includes(
             request.resourceType()
           )
         ) {
@@ -663,10 +676,10 @@ class Site {
         } else {
           await this.emit('request', { page, request })
 
-          if (Object.keys(this.options.headers).length) {
+          if (Object.keys(this.driver.options.headers).length) {
             const headers = {
               ...request.headers(),
-              ...this.options.headers,
+              ...this.driver.options.headers,
             }
 
             request.continue({ headers })
@@ -694,7 +707,7 @@ class Site {
         ) {
           const scripts = await response.text()
 
-          await this.onDetect(response.url(), analyze({ scripts }))
+          await this.onDetect(response.url(), analyze({ scripts }), 'scripts')
         }
       } catch (error) {
         if (error.constructor.name !== 'ProtocolError') {
@@ -732,7 +745,7 @@ class Site {
               if (
                 _url.hostname.replace(/^www\./, '') ===
                   this.originalUrl.hostname.replace(/^www\./, '') ||
-                (redirects < 3 && !this.options.noRedirect)
+                (redirects < 3 && !this.driver.options.noRedirect)
               ) {
                 url = _url
 
@@ -747,7 +760,7 @@ class Site {
             ? response.securityDetails().issuer()
             : ''
 
-          await this.onDetect(url, analyze({ headers, certIssuer }))
+          await this.onDetect(url, analyze({ headers, certIssuer }), 'headers, certIssuer')
 
           await this.emit('response', { page, response, headers, certIssuer })
         }
@@ -769,8 +782,10 @@ class Site {
         throw error
       }
 
-      if (!this.options.noScripts) {
-        await sleep(this.options.fast ? 1000 : 3000)
+      if (!this.driver.options.noScripts) {
+        const ms = this.driver.options.fast ? 1000 : 3000;
+        this.log(`Sleeping for ${ms} ms (after chromium.goto)`);
+        await sleep(ms);
       }
 
       // page.on('console', (message) => this.log(message.text()))
@@ -785,7 +800,7 @@ class Site {
           cookieNames.push(cookie.name);
         });
         // this.log(cookies);
-        this.log(cookieNames);
+        // this.log(cookieNames);
       } catch (error) {
         error.message += ` (${url})`
 
@@ -795,19 +810,19 @@ class Site {
       // HTML
       let html = await this.promiseTimeout(page.content(), '', 'Timeout (html)')
 
-      if (this.options.htmlMaxCols && this.options.htmlMaxRows) {
+      if (this.driver.options.htmlMaxCols && this.driver.options.htmlMaxRows) {
         const batches = []
-        const rows = html.length / this.options.htmlMaxCols
+        const rows = html.length / this.driver.options.htmlMaxCols
 
         for (let i = 0; i < rows; i += 1) {
           if (
-            i < this.options.htmlMaxRows / 2 ||
-            i > rows - this.options.htmlMaxRows / 2
+            i < this.driver.options.htmlMaxRows / 2 ||
+            i > rows - this.driver.options.htmlMaxRows / 2
           ) {
             batches.push(
               html.slice(
-                i * this.options.htmlMaxCols,
-                (i + 1) * this.options.htmlMaxCols
+                i * this.driver.options.htmlMaxCols,
+                (i + 1) * this.driver.options.htmlMaxCols
               )
             )
           }
@@ -829,7 +844,7 @@ class Site {
         await Promise.all([
           (async () => {
             // Links
-            links = !this.options.recursive
+            links = !this.driver.options.recursive
               ? []
               : await this.promiseTimeout(
                   (
@@ -906,7 +921,7 @@ class Site {
                     }
 
                     return css.join('\n')
-                  }, this.options.htmlMaxRows),
+                  }, this.driver.options.htmlMaxRows),
                   { jsonValue: () => '' },
                   'Timeout (css)'
                 )
@@ -981,7 +996,7 @@ class Site {
           })(),
           (async () => {
             // JavaScript
-            js = this.options.noScripts
+            js = this.driver.options.noScripts
               ? []
               : await this.promiseTimeout(getJs(page), [], 'Timeout (js)')
           })(),
@@ -1003,24 +1018,20 @@ class Site {
         meta,
       }
 
-      await this.onDetect(
+      const analyzedDom = analyzeDom(dom);
+      const analyzedJs = analyzeJs(js);
+      const analyzedOthers = analyze({
         url,
-        [
-          analyzeDom(dom),
-          analyzeJs(js),
-          analyze({
-            url,
-            cookies,
-            cookieNames,
-            html,
-            text,
-            css,
-            scripts,
-            scriptSrc,
-            meta,
-          }),
-        ].flat()
-      )
+        cookies,
+        cookieNames,
+        html,
+        text,
+        css,
+        scripts,
+        scriptSrc,
+        meta,
+      });
+      await this.onDetect(url, [analyzedDom, analyzedJs, analyzedOthers].flat(), 'dom, js, url, cookies, cookieNames, html, text, css, scripts, scriptSrc, meta')
 
       const reducedLinks = Array.prototype.reduce.call(
         links,
@@ -1097,10 +1108,10 @@ class Site {
   }
 
   async newPage(url) {
-    if (!this.browser) {
-      await this.initDriver()
+    if (!this.driver.browser) {
+      await this.driver.init()
 
-      if (!this.browser) {
+      if (!this.driver.browser) {
         throw new Error('Browser closed')
       }
     }
@@ -1108,7 +1119,7 @@ class Site {
     let page
 
     try {
-      page = await this.browser.newPage()
+      page = await this.driver.browser.newPage()
 
       if (!page || page.isClosed()) {
         throw new Error('Page did not open')
@@ -1118,18 +1129,18 @@ class Site {
 
       this.error(error)
 
-      await this.initDriver()
+      await this.driver.init()
 
-      page = await this.browser.newPage()
+      page = await this.driver.browser.newPage()
     }
 
     this.pages.push(page)
 
-    page.setJavaScriptEnabled(!this.options.noScripts)
+    page.setJavaScriptEnabled(!this.driver.options.noScripts)
 
-    page.setDefaultTimeout(this.options.maxWait)
+    page.setDefaultTimeout(this.driver.options.maxWait)
 
-    await page.setUserAgent(this.options.userAgent)
+    await page.setUserAgent(this.driver.options.userAgent)
 
     page.on('dialog', (dialog) => dialog.dismiss())
 
@@ -1143,8 +1154,10 @@ class Site {
   }
 
   async analyze(url = this.originalUrl, index = 1, depth = 1) {
-    if (this.options.recursive) {
-      await sleep(this.options.delay * index)
+    if (this.driver.options.recursive) {
+      const ms = this.driver.options.delay * index;
+      this.log(`Sleeping for ${ms} ms (before recursive)`);
+      await sleep(ms);
     }
 
     await Promise.allSettled([
@@ -1156,14 +1169,14 @@ class Site {
 
           if (
             links.length &&
-            this.options.recursive &&
-            Object.keys(this.analyzedUrls).length < this.options.maxUrls &&
-            depth < this.options.maxDepth
+            this.driver.options.recursive &&
+            Object.keys(this.analyzedUrls).length < this.driver.options.maxUrls &&
+            depth < this.driver.options.maxDepth
           ) {
             await this.batch(
               links.slice(
                 0,
-                this.options.maxUrls - Object.keys(this.analyzedUrls).length
+                this.driver.options.maxUrls - Object.keys(this.analyzedUrls).length
               ),
               depth + 1
             )
@@ -1180,7 +1193,7 @@ class Site {
         }
       })(),
       (async () => {
-        if (this.options.probe && !this.probed) {
+        if (this.driver.options.probe && !this.probed) {
           this.probed = true
 
           await this.probe(url)
@@ -1188,13 +1201,13 @@ class Site {
       })(),
     ])
 
-    const patterns = this.options.extended
+    const patterns = this.driver.options.extended
       ? this.detections.reduce(
           (
             patterns,
             {
               technology: { name, implies, excludes },
-              pattern: { regex, value, match, confidence, type, version },
+              pattern: { regex, origKey, value, match, confidence, type, version },
             }
           ) => {
             patterns[name] = patterns[name] || []
@@ -1202,8 +1215,9 @@ class Site {
             patterns[name].push({
               type,
               regex: regex.source,
-              value: String(value).length <= 250 ? value : null,
-              match: match.length <= 250 ? match : null,
+              value: String(value).length <= 999 ? value : null,
+              origKey,
+              match: match.length <= 999 ? match : null,
               confidence,
               version,
               implies: implies.map(({ name }) => name),
@@ -1267,7 +1281,7 @@ class Site {
       },
     ]
 
-    if (this.options.probe === 'full') {
+    if (this.driver.options.probe === 'full') {
       Wappalyzer.technologies
         .filter(({ probe }) => Object.keys(probe).length)
         .forEach((technology) => {
@@ -1296,9 +1310,9 @@ class Site {
         }),
         [],
         'Timeout (dns)',
-        this.options.fast
-          ? Math.min(this.options.maxWait, 15000)
-          : this.options.maxWait
+        this.driver.options.fast
+          ? Math.min(this.driver.options.maxWait, 15000)
+          : this.driver.options.maxWait
       )
     }
 
@@ -1308,11 +1322,13 @@ class Site {
       // Static files
       ...paths.map(async ({ type, path, technology }, index) => {
         try {
-          await sleep(this.options.delay * index)
+          const ms = this.driver.options.delay * index;
+          this.log(`Sleeping for ${ms} ms (probe static files)`);
+          await sleep(ms);
 
           const body = await get(new URL(path, url.href), {
-            userAgent: this.options.userAgent,
-            timeout: Math.min(this.options.maxWait, 3000),
+            userAgent: this.driver.options.userAgent,
+            timeout: Math.min(this.driver.options.maxWait, 3000),
           })
 
           this.log(`Probe ok (${path})`)
@@ -1326,7 +1342,8 @@ class Site {
                 [type]: path ? { [path]: [text] } : text,
               },
               technology && [technology]
-            )
+            ),
+            type
           )
         } catch (error) {
           this.error(`Probe failed (${path}): ${error.message || error}`)
@@ -1365,7 +1382,7 @@ class Site {
           `Probe DNS ok: (${Object.values(dnsRecords).flat().length} records)`
         )
 
-        await this.onDetect(url, analyze({ dns: dnsRecords }))
+        await this.onDetect(url, analyze({ dns: dnsRecords }), 'dns')
 
         resolve()
       }),
@@ -1377,7 +1394,7 @@ class Site {
       return
     }
 
-    const batched = links.splice(0, this.options.batchSize)
+    const batched = links.splice(0, this.driver.options.batchSize)
 
     await Promise.allSettled(
       batched.map((link, index) => this.analyze(link, index, depth))
@@ -1386,21 +1403,23 @@ class Site {
     await this.batch(links, depth, batch + 1)
   }
 
-  async onDetect(url, detections = []) {
+  async onDetect(url, detections, types) {
+    this.log(`Adding ${detections.length} detections (${types})`);
     this.detections = this.detections
       .concat(detections)
       .filter(
         (
-          { technology: { name }, pattern: { regex }, version },
+          { technology: { name }, pattern: { regex, type }, version },
           index,
           detections
         ) =>
           detections.findIndex(
             ({
               technology: { name: _name },
-              pattern: { regex: _regex },
+              pattern: { regex: _regex, type: _type },
               version: _version,
             }) =>
+              type === _type &&
               name === _name &&
               version === _version &&
               (!regex || regex.toString() === _regex.toString())
@@ -1461,7 +1480,7 @@ class Site {
               [
                 analyzeDom(dom, technologies),
                 analyzeJs(js, technologies),
-                await analyze(
+                analyze(
                   {
                     url,
                     cookies,
@@ -1475,7 +1494,8 @@ class Site {
                   },
                   technologies
                 ),
-              ].flat()
+              ].flat(),
+              'dom, js, url, cookies, cookieNames, html, text, css, scripts, scriptSrc, meta'
             )
           }
         })

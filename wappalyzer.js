@@ -672,6 +672,7 @@ const Wappalyzer = {
                 type,
                 value,
                 match: matches[0],
+                origKey: key,
               },
               version: Wappalyzer.resolveVersion(pattern, value),
             })
