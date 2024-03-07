@@ -623,10 +623,7 @@ class Site {
 
     page.on('request', async (request) => {
       try {
-        if ([
-        'xhr',
-        'fetch'
-        ].includes(request.resourceType())
+        if (['xhr', 'fetch'].includes(request.resourceType())
         ) {
           let hostname
 
@@ -673,7 +670,7 @@ class Site {
           if (Object.keys(this.options.headers).length) {
             const headers = {
               ...request.headers(),
-              ...this.options.headers
+              ...this.options.headers,
             }
 
             request.continue({ headers })
