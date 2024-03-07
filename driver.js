@@ -655,7 +655,12 @@ class Site {
         if (
           (responseReceived && request.isNavigationRequest()) ||
           request.frame() !== page.mainFrame() ||
-          !['document', ...(this.options.noScripts ? [] : ['script']), 'fetch'].includes(
+          ![
+            'document',
+            'fetch',
+            'xhr',
+            ...(this.options.noScripts ? [] : ['script'])
+          ].includes(
             request.resourceType()
           )
         ) {
@@ -666,7 +671,7 @@ class Site {
           if (Object.keys(this.options.headers).length) {
             const headers = {
               ...request.headers(),
-              ...this.options.headers,
+              ...this.options.headers
             }
 
             request.continue({ headers })
