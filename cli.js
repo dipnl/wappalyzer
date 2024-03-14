@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const Wappalyzer = require('./driver')
+const Driver = require('./driver')
 
 const args = process.argv.slice(2)
 
@@ -150,30 +150,32 @@ for (const type of Object.keys(storage)) {
 }
 
 ;(async function () {
-  const wappalyzer = new Wappalyzer(options)
+  const driver = new Driver(options)
 
   try {
-    await wappalyzer.init()
+    await driver.init()
 
-    const site = await wappalyzer.open(url, headers, storage)
+    // Fake-load page, clear cookies, set storage
+    const site = await driver.open(url, headers, storage)
 
     await new Promise((resolve) =>
       setTimeout(resolve, parseInt(options.defer || 0, 10))
     )
 
+    // Load pages and collect detections
     const results = await site.analyze()
 
     process.stdout.write(
       `${JSON.stringify(results, null, options.pretty ? 2 : null)}\n`
     )
 
-    await wappalyzer.destroy()
+    await driver.destroy()
 
     process.exit(0)
   } catch (error) {
     try {
       await Promise.race([
-        wappalyzer.destroy(),
+        driver.destroy(),
         new Promise((resolve, reject) =>
           setTimeout(
             () => reject(new Error('Attempt to close the browser timed out')),
