@@ -636,7 +636,7 @@ class Site {
 
     page.on('request', async (request) => {
       try {
-        if (request.resourceType() === 'xhr') {
+        if (['xhr', 'fetch'].includes(request.resourceType())) {
           let hostname
 
           try {
@@ -668,7 +668,7 @@ class Site {
         if (
           (responseReceived && request.isNavigationRequest()) ||
           request.frame() !== page.mainFrame() ||
-          !['document', ...(this.driver.options.noScripts ? [] : ['script'])].includes(
+          !['document', 'fetch', 'xhr', ...(this.driver.options.noScripts ? [] : ['script'])].includes(
             request.resourceType()
           )
         ) {
