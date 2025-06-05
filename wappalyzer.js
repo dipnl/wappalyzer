@@ -269,19 +269,22 @@ const Wappalyzer = {
               throw new Error(`Implied technology does not exist: ${name}`)
             }
 
-            if (
-              resolved.findIndex(
-                ({ technology: { name } }) => name === implied.name
-              ) === -1
-            ) {
+            const existingIndex = resolved.findIndex(
+              ({ technology: { name } }) => name === implied.name
+            )
+            if (existingIndex === -1) {
               resolved.push({
                 technology: implied,
-                confidence: Math.min(confidence, _confidence),
+                confidence: Math.max(confidence, _confidence),
                 version: version || '',
                 lastUrl,
               })
-
               done = false
+            } else {
+              if (resolved[existingIndex].confidence < _confidence) {
+                resolved[existingIndex].confidence = _confidence
+                done = false
+              }
             }
           }
         )
