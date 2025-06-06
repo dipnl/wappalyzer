@@ -784,6 +784,7 @@ class Site {
         const ms = this.driver.options.fast ? 1000 : 3000;
         this.log(`Sleeping for ${ms} ms (after chromium.goto)`);
         await sleep(ms);
+        this.log(`Slept for ${ms} ms (after chromium.goto)`);
       }
 
       // page.on('console', (message) => this.log(message.text()))
