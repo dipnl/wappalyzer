@@ -1017,6 +1017,20 @@ class Site {
         meta,
       }
 
+      if (this.driver.options.dump) {
+        console.log({
+          js,
+          cookies,
+          cookieNames,
+          // html,
+          // text,
+          css,
+          scripts,
+          scriptSrc,
+          meta,
+        });
+      }
+
       const analyzedDom = analyzeDom(dom);
       const analyzedJs = analyzeJs(js);
       const analyzedOthers = analyze({

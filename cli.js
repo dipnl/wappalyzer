@@ -75,6 +75,7 @@ Examples:
 Options:
   -b, --batch-size=...       Process links in batches
   -d, --debug                Output debug messages
+  --dump                     Dump all detections, without analyzing/finding technologies
   -f, --fast                 Prioritise speed over accuracy
   -t, --delay=ms             Wait for ms milliseconds between requests
   -h, --help                 This text
@@ -165,9 +166,11 @@ for (const type of Object.keys(storage)) {
     // Load pages and collect detections
     const results = await site.analyze()
 
-    process.stdout.write(
-      `${JSON.stringify(results, null, options.pretty ? 2 : null)}\n`
-    )
+    if (!options.dump) {
+      process.stdout.write(
+        `${JSON.stringify(results, null, options.pretty ? 2 : null)}\n`
+      )
+    }
 
     await driver.destroy()
 
