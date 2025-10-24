@@ -5,6 +5,8 @@ const http = require('http')
 const https = require('https')
 const puppeteer = require('puppeteer')
 const Wappalyzer = require('./wappalyzer')
+const { sleep, limitHtml } = require('./src/utils')
+const { loadConfig } = require('./src/config')
 
 const { setTechnologies, setCategories, analyze, analyzeManyToMany, resolve } = Wappalyzer
 
@@ -26,65 +28,12 @@ const chromiumArgs = CHROMIUM_ARGS
 
 const extensions = /^([^.]+$|\.(asp|aspx|cgi|htm|html|jsp|php)$)/
 
-const categories = JSON.parse(
-  fs.readFileSync(path.resolve(`${__dirname}/categories.json`))
-)
-
-let technologies = {}
-
-for (const index of Array(27).keys()) {
-  const character = index ? String.fromCharCode(index + 96) : '_'
-
-  technologies = {
-    ...technologies,
-    ...JSON.parse(
-      fs.readFileSync(
-        path.resolve(`${__dirname}/technologies/${character}.json`)
-      )
-    ),
-  }
-}
-
-if (fs.existsSync('wappalyzer-custom-technologies.json')) {
-  const customJson = fs.readFileSync('wappalyzer-custom-technologies.json')
-  technologies = {
-    ...technologies,
-    ...JSON.parse(customJson.length ? customJson : '{}'),
-  }
-}
-
-if (fs.existsSync('wappalyzer-custom-categories.json')) {
-  const customJson = fs.readFileSync('wappalyzer-custom-categories.json')
-  const customCats = JSON.parse(customJson.length ? customJson : '{}')
-  for (const catId in customCats) {
-    categories[catId] = customCats[catId]
-  }
-}
+const { categoryMap, technologies } = loadConfig()
 
 setTechnologies(technologies)
-setCategories(categories)
+setCategories(categoryMap)
 
 const xhrDebounce = []
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-// Limit HTML size consistently across the codebase
-function limitHtml(html, { maxRows, maxCols }) {
-  if (!html || !maxRows || !maxCols) return html || ''
-
-  const batches = []
-  const rows = html.length / maxCols
-
-  for (let i = 0; i < rows; i += 1) {
-    if (i < maxRows / 2 || i > rows - maxRows / 2) {
-      batches.push(html.slice(i * maxCols, (i + 1) * maxCols))
-    }
-  }
-
-  return batches.join('\n')
-}
 
 function getJs(page, technologies = Wappalyzer.technologies) {
   return page.evaluate((technologies) => {
@@ -1713,7 +1662,7 @@ class Site {
     const __resolveStart = Date.now()
     let __resolvedTechs = resolve(this.detections)
     const __resolveMs = Date.now() - __resolveStart
-    // If category filter is active, restrict resolved technologies to selected categories
+    // If category filter is active, restrict resolved technologies to selected categoryMap
     const __catIds = (this.driver.options.categoryIds || [])
     if (__catIds.length > 0) {
       const __catSet = new Set(__catIds)

@@ -31,6 +31,9 @@
   "bin": {
     "wappalyzer": "./cli.js"
   },
+  "scripts": {
+    "smoke": "node scripts/smoke.js"
+  },
   "dependencies": {
     "puppeteer": "^24"
   },
