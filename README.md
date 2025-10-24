@@ -25,6 +25,8 @@ yarn run link
 
 ```sh
 node src/drivers/npm/cli.js https://example.com
+# Multiple URLs in parallel (batched by --batch-size)
+node src/drivers/npm/cli.js https://a.example.com https://b.example.com https://c.example.com -b 3
 ```
 
 ### Chrome extension
@@ -48,7 +50,7 @@ Patterns (regular expressions) are kept in [`src/technologies/`](https://github.
 
 #### Example
 
-```json
+```
 "Example": {
   "description": "A short description of the technology.",
   "cats": [
@@ -600,7 +602,7 @@ const wappalyzer = new Wappalyzer(options)
 
     // Optionally set local and/or session storage
     const storage = {
-      local: {}
+      local: {},
       session: {}
     }
 
@@ -664,3 +666,39 @@ Listen to events with `site.on(eventName, callback)`. Use the `page` parameter t
 | `response`  | `page`, `request`              | Emitted upon receiving a server response |
 | `goto`      | `page`, `url`, `html`, `cookies`, `scriptsSrc`, `scripts`, `meta`, `js`, `language` `links` | Emitted after a page has been analysed |
 | `analyze`   | `urls`, `technologies`, `meta` | Emitted when the site has been analysed |
+
+
+
+## Additional CLI flags (this fork)
+The CLI in this fork adds a few performance and observability flags while preserving backward compatibility:
+
+- --block-assets: Block non-essential assets (images, media, fonts, stylesheets). Defaults to enabled when --fast is set unless explicitly disabled with --block-assets=0.
+- --log=level: Structured log output with levels error|warn|info|debug. Default is off; --debug still forces verbose logs.
+- --trace-timings: Print a compact JSON timing summary per analyzed URL with phases: { url, timings: { nav, idle, html, headers, js, dom, resolve, total } }.
+- --trace-save=FILE: When used with --trace-timings, also append each timing JSON line to FILE (NDJSON/one JSON per line).
+- --list: Output a simple newline-separated list of detected technologies in the form: Technology Name (Category 1, Category 2, ... / confidence).
+- --dnt: Send the Do Not Track header (DNT: 1) on all requests.
+- --ua-suffix=...: Append a custom suffix to the User-Agent (e.g. "; Wappalyzer/cli").
+- --backoff: Respect 429/503 by applying Retry-After backoff (opt-in).
+- --rate-limit-ms=...: Minimum milliseconds between requests per host (opt-in).
+- --respect-robots: Respect robots.txt (User-agent: *) for crawling/navigation.
+- --allow-domains=...: Comma-separated domain allowlist (exact or suffix). If set, only these domains plus the main host are requested.
+- --block-domains=...: Comma-separated domain blocklist (exact or suffix). These domains will be blocked.
+- --wip: Add wip.json overlay on top of bundled technologies + prod.json when loading technologies.
+- --tech-prod=PATH: Path to external prod.json (or set env WAPPALYZER_TECH_PROD).
+- --tech-wip=PATH: Path to external wip.json (or set env WAPPALYZER_TECH_WIP).
+- --category=ID[,ID...]: Restrict detection to one or more category IDs. Only technologies in these categories are probed and reported.
+
+Examples:
+
+```
+node cli.js https://example.com --fast --trace-timings
+node cli.js https://example.com --fast --trace-timings --trace-save=timings.ndjson
+node cli.js https://example.com --log=info
+node cli.js https://example.com --fast --block-assets=0
+node cli.js https://example.com --list
+node cli.js https://example.com --dnt --ua-suffix="; Wappalyzer/cli"
+node cli.js https://example.com --respect-robots --backoff
+node cli.js https://example.com --rate-limit-ms=200 --allow-domains=example.com,cdn.example.com
+node cli.js https://example.com --block-domains=analytics.example.com,.doubleclick.net
+```

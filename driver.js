@@ -70,6 +70,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+// Limit HTML size consistently across the codebase
+function limitHtml(html, { maxRows, maxCols }) {
+  if (!html || !maxRows || !maxCols) return html || ''
+
+  const batches = []
+  const rows = html.length / maxCols
+
+  for (let i = 0; i < rows; i += 1) {
+    if (i < maxRows / 2 || i > rows - maxRows / 2) {
+      batches.push(html.slice(i * maxCols, (i + 1) * maxCols))
+    }
+  }
+
+  return batches.join('\n')
+}
+
 function getJs(page, technologies = Wappalyzer.technologies) {
   return page.evaluate((technologies) => {
     return technologies
@@ -81,14 +97,18 @@ function getJs(page, technologies = Wappalyzer.technologies) {
 
           const parts = chain.split('.')
 
-          const root = /^[a-z_$][a-z0-9_$]*$/i.test(parts[0])
-            ? // eslint-disable-next-line no-new-func
-              new Function(
-                `return typeof ${
-                  parts[0]
-                } === 'undefined' ? undefined : ${parts.shift()}`
-              )()
-            : window
+          const first = parts.shift()
+          let root
+          try {
+            if (/^[a-z_$][a-z0-9_$]*$/i.test(first)) {
+              root = window[first]
+            } else {
+              // Invalid identifier must not default to window — prevents false positives for hyphenated keys
+              root = undefined
+            }
+          } catch (e) {
+            root = undefined
+          }
 
           const value = parts.reduce(
             (value, method) =>
@@ -359,6 +379,11 @@ class Driver {
       userAgent:
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.97 Safari/537.36',
       extended: false,
+      headers: {},
+      // New optional flags (backward compatible defaults)
+      blockAssets: undefined, // if undefined, will default to fast
+      log: undefined, // error|warn|info|debug
+      traceTimings: false,
       ...options,
     }
 
@@ -380,8 +405,168 @@ class Driver {
     this.options.noScripts = Boolean(+this.options.noScripts)
     this.options.extended = Boolean(+this.options.extended)
 
+    // Normalize new flags
+    this.options.traceTimings = Boolean(+this.options.traceTimings)
+
+    // Technology source selection (external repo support)
+    this.options.wip = Boolean(+this.options.wip)
+    // Paths may be provided via CLI or environment variables; if not, auto-detect repo-root prod.json/wip.json
+    this.options.techProd = this.options.techProd || process.env.WAPPALYZER_TECH_PROD
+    this.options.techWip = this.options.techWip || process.env.WAPPALYZER_TECH_WIP
+    try {
+      const cwd = process.cwd()
+      if (!this.options.techProd) {
+        const prodPath = path.resolve(cwd, 'prod.json')
+        if (fs.existsSync(prodPath)) {
+          this.options.techProd = prodPath
+        }
+      }
+      if (!this.options.techWip) {
+        const wipPath = path.resolve(cwd, 'wip.json')
+        if (fs.existsSync(wipPath)) {
+          this.options.techWip = wipPath
+        }
+      }
+    } catch (e) {
+      // ignore auto-detect errors
+    }
+
+    // DNT header (privacy)
+    this.options.dnt = Boolean(+this.options.dnt)
+    if (this.options.dnt) {
+      this.options.headers = { ...(this.options.headers || {}), DNT: '1' }
+    }
+
+    // UA suffix
+    if (typeof this.options.uaSuffix !== 'undefined' && this.options.uaSuffix !== false) {
+      const suffix = String(this.options.uaSuffix || '').trim()
+      if (suffix) {
+        this.options.userAgent = `${this.options.userAgent} ${suffix}`
+          .replace(/\s+/g, ' ')
+          .trim()
+      }
+    }
+
+    // blockAssets: default to fast when undefined; otherwise coerce to boolean
+    if (typeof this.options.blockAssets === 'undefined') {
+      this.options.blockAssets = !!this.options.fast
+    } else {
+      this.options.blockAssets = Boolean(+this.options.blockAssets)
+    }
+    if (typeof this.options.log === 'string') {
+      const level = this.options.log.toLowerCase()
+      this.options.log = ['error', 'warn', 'info', 'debug'].includes(level)
+        ? level
+        : undefined
+    } else {
+      this.options.log = undefined
+    }
+
+    // Politeness options (opt-in)
+    this.options.backoff = Boolean(+this.options.backoff)
+    this.options.rateLimitMs = parseInt(this.options.rateLimitMs || 0, 10)
+    this.options.respectRobots = Boolean(+this.options.respectRobots)
+    const parseDomains = (v) =>
+      (v || '')
+        .toString()
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    this.options.allowDomains = Array.isArray(this.options.allowDomains)
+      ? this.options.allowDomains
+      : parseDomains(this.options.allowDomains)
+    this.options.blockDomains = Array.isArray(this.options.blockDomains)
+      ? this.options.blockDomains
+      : parseDomains(this.options.blockDomains)
+
+    // Category filter (ids). Accept comma-separated or repeated flags
+    const parseCategoryIds = (v) => {
+      const arr = Array.isArray(v) ? v : (v != null ? [v] : [])
+      const parts = arr
+        .map(String)
+        .join(',')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const ids = parts
+        .map((s) => parseInt(s, 10))
+        .filter((n) => !Number.isNaN(n))
+      return Array.from(new Set(ids))
+    }
+    this.options.categoryIds = parseCategoryIds(this.options.category)
+
     if (this.options.proxy) {
       chromiumArgs.push(`--proxy-server=${this.options.proxy}`)
+    }
+
+    // Merge external technologies on top of bundled: prod.json by default, plus wip.json when --wip
+    try {
+      let merged = { ...technologies }
+
+      // Merge prod.json if available/configured
+      const prodPath = this.options.techProd
+      if (prodPath && fs.existsSync(prodPath)) {
+        try {
+          const buf = fs.readFileSync(prodPath)
+          const prodParsed = JSON.parse(buf.length ? buf : '{}')
+          merged = { ...merged, ...prodParsed }
+          this.log(`Merged technologies from ${prodPath} (prod overlay)`)
+        } catch (e) {
+          this.log(`Failed to parse prod technologies at ${prodPath}: ${e.message || e}`, 'driver', 'warn')
+        }
+      } else if (prodPath) {
+        this.log(`Technologies file not found: ${prodPath} — skipping prod overlay`, 'driver', 'warn')
+      }
+
+      // Optionally merge wip.json if --wip is set
+      if (this.options.wip) {
+        const wipPath = this.options.techWip
+        if (wipPath && fs.existsSync(wipPath)) {
+          try {
+            const buf = fs.readFileSync(wipPath)
+            const wipParsed = JSON.parse(buf.length ? buf : '{}')
+            merged = { ...merged, ...wipParsed }
+            this.log(`Merged technologies from ${wipPath} (wip overlay)`)
+          } catch (e) {
+            this.log(`Failed to parse wip technologies at ${wipPath}: ${e.message || e}`, 'driver', 'warn')
+          }
+        } else if (wipPath) {
+          this.log(`Technologies file not found: ${wipPath} — skipping wip overlay`, 'driver', 'warn')
+        }
+      }
+
+      // Apply local custom overrides if present (final layer)
+      if (fs.existsSync('wappalyzer-custom-technologies.json')) {
+        try {
+          const customBuf = fs.readFileSync('wappalyzer-custom-technologies.json')
+          const customObj = JSON.parse(customBuf.length ? customBuf : '{}')
+          merged = { ...merged, ...customObj }
+        } catch (e) {
+          this.log(`Failed to merge custom technologies: ${e.message || e}`, 'driver', 'warn')
+        }
+      }
+
+      // Re-set technologies with merged overlays (if any overlay occurred, this is idempotent too)
+      setTechnologies(merged)
+
+      // Prepare active technologies filtered by category IDs if provided
+      const ids = Array.isArray(this.options.categoryIds) ? this.options.categoryIds : []
+      if (ids.length > 0) {
+        const idSet = new Set(ids)
+        this.activeTechnologies = (Wappalyzer.technologies || []).filter((t) => {
+          return t && Array.isArray(t.categories) && t.categories.some((cid) => idSet.has(cid))
+        })
+        // Basic validation: if filter yields zero, fall back to all but warn
+        if (!this.activeTechnologies.length) {
+          this.log(`No technologies match category filter ${ids.join(',')}. Using all technologies.`, 'driver', 'warn')
+          this.activeTechnologies = Wappalyzer.technologies
+        }
+      } else {
+        this.activeTechnologies = Wappalyzer.technologies
+      }
+    } catch (e) {
+      this.log(`Failed to load external technologies JSON: ${e.message || e}`, 'driver', 'error')
+      this.activeTechnologies = Wappalyzer.technologies
     }
 
     this.destroyed = false
@@ -489,7 +674,9 @@ class Driver {
   }
 
   log(message, source = 'driver') {
-    if (this.options.debug) {
+    const level = this.options.log
+    const shouldLog = this.options.debug || level === 'debug' || level === 'info'
+    if (shouldLog) {
       // eslint-disable-next-line no-console
       console.log(`log | ${source} |`, message)
     }
@@ -539,16 +726,30 @@ class Site {
     this.listeners = {}
 
     this.pages = []
+    // Use an incognito browser context per Site to isolate cookies/storage between different URLs
+    this.context = null
 
     this.cache = {}
+
+    this.perHost = {
+      lastRequestAt: {},
+      backoffUntil: {},
+      robots: {},
+    }
 
     this.probed = false
   }
 
   log(message, source = 'driver', type = 'log') {
-    if (this.driver.options.debug) {
+    const ranks = { error: 0, warn: 1, log: 2, info: 2, debug: 3 }
+    const configured = this.driver.options.log
+    const allowByLevel =
+      !!configured && ranks[type] <= (configured === 'error' ? 0 : configured === 'warn' ? 1 : configured === 'info' ? 2 : configured === 'debug' ? 3 : -1)
+
+    if (this.driver.options.debug || allowByLevel) {
       // eslint-disable-next-line no-console
-      console[type](`${type} | ${source} |`, message)
+      const out = type === 'debug' ? 'log' : type
+      console[out](`${type} | ${source} |`, message)
     }
 
     this.emit(type, { message, source })
@@ -614,6 +815,87 @@ class Site {
     ])
   }
 
+  // Check domain against allow/block lists
+  hostMatches(domain, rule) {
+    if (!rule) return false
+    if (domain === rule) return true
+    if (rule.startsWith('.')) {
+      return domain.endsWith(rule)
+    }
+    return domain === rule || domain.endsWith(`.${rule}`)
+  }
+
+  isBlockedDomain(domain) {
+    const { blockDomains = [] } = this.driver.options
+    return blockDomains.some((rule) => this.hostMatches(domain, rule))
+  }
+
+  isAllowedDomain(domain, mainHost) {
+    const { allowDomains = [] } = this.driver.options
+    if (!allowDomains || !allowDomains.length) return true
+    // Always allow the main host
+    if (domain === mainHost || domain.endsWith(`.${mainHost}`)) return true
+    return allowDomains.some((rule) => this.hostMatches(domain, rule))
+  }
+
+  async fetchRobots(url) {
+    const host = url.hostname
+    if (this.perHost.robots[host]) return this.perHost.robots[host]
+    const robotsUrl = new URL(`${url.protocol}//${host}/robots.txt`)
+    let body = ''
+    try {
+      body = await get(robotsUrl, { timeout: Math.min(3000, this.driver.options.maxWait) })
+    } catch (e) {
+      this.perHost.robots[host] = { allow: [], disallow: [], loaded: true }
+      return this.perHost.robots[host]
+    }
+    const lines = String(body || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+    let active = false
+    const allow = []
+    const disallow = []
+    for (const line of lines) {
+      if (!line || line.startsWith('#')) continue
+      const m = /^(user-agent|allow|disallow)\s*:\s*(.+)$/i.exec(line)
+      if (!m) continue
+      const key = m[1].toLowerCase()
+      const val = m[2].trim()
+      if (key === 'user-agent') {
+        // Activate only for UA *
+        active = val === '*'
+      } else if (active && key === 'allow') {
+        allow.push(val)
+      } else if (active && key === 'disallow') {
+        disallow.push(val)
+      }
+    }
+    this.perHost.robots[host] = { allow, disallow, loaded: true }
+    return this.perHost.robots[host]
+  }
+
+  async isAllowedByRobots(url) {
+    if (!this.driver.options.respectRobots) return true
+    const { allow, disallow } = await this.fetchRobots(url)
+    const path = url.pathname || '/'
+    const matches = (rule) => {
+      if (rule === '') return true // empty disallow means allow all
+      if (rule === '/') return false
+      return path.startsWith(rule)
+    }
+    let bestAllow = ''
+    let bestDisallow = ''
+    for (const r of allow) {
+      if (matches(r) && r.length > bestAllow.length) bestAllow = r
+    }
+    for (const r of disallow) {
+      if (matches(r) && r.length > bestDisallow.length) bestDisallow = r
+    }
+    if (!bestAllow && !bestDisallow) return true
+    if (bestAllow.length >= bestDisallow.length) return true
+    return false
+  }
+
   async goto(url) {
     // Return when the URL is a duplicate or maxUrls has been reached
     if (this.analyzedUrls[url.href]) {
@@ -624,6 +906,25 @@ class Site {
 
     this.analyzedUrls[url.href] = {
       status: 0,
+      timings: {},
+    }
+
+    // Respect robots.txt before navigation
+    if (this.driver.options.respectRobots) {
+      try {
+        const allowed = await this.isAllowedByRobots(url)
+        if (!allowed) {
+          this.log(`Skipping disallowed by robots.txt: ${url.href}`, 'driver', 'warn')
+          this.analyzedUrls[url.href] = {
+            status: 0,
+            error: 'Disallowed by robots.txt',
+            timings: {},
+          }
+          return []
+        }
+      } catch (e) {
+        // Continue on robots errors
+      }
     }
 
     const page = await this.newPage(url)
@@ -634,45 +935,72 @@ class Site {
 
     page.on('request', async (request) => {
       try {
+        let reqHost
+        try {
+          reqHost = new URL(request.url()).hostname
+        } catch (e) {
+          request.abort('blockedbyclient')
+          return
+        }
+
         if (['xhr', 'fetch'].includes(request.resourceType())) {
-          let hostname
-
-          try {
-            ;({ hostname } = new URL(request.url()))
-          } catch (error) {
-            request.abort('blockedbyclient')
-
-            return
-          }
-
-          if (!xhrDebounce.includes(hostname)) {
-            xhrDebounce.push(hostname)
+          if (!xhrDebounce.includes(reqHost)) {
+            xhrDebounce.push(reqHost)
 
             setTimeout(async () => {
-              xhrDebounce.splice(xhrDebounce.indexOf(hostname), 1)
+              xhrDebounce.splice(xhrDebounce.indexOf(reqHost), 1)
 
               this.analyzedXhr[url.hostname] =
                 this.analyzedXhr[url.hostname] || []
 
-              if (!this.analyzedXhr[url.hostname].includes(hostname)) {
-                this.analyzedXhr[url.hostname].push(hostname)
+              if (!this.analyzedXhr[url.hostname].includes(reqHost)) {
+                this.analyzedXhr[url.hostname].push(reqHost)
 
-                await this.onDetect(url, analyze({ xhr: hostname }), 'xhr')
+                await this.onDetect(url, analyze({ xhr: reqHost }, this.driver.activeTechnologies), 'xhr')
               }
             }, 1000)
           }
         }
 
+        // Domain allow/block checks (opt-in allow list)
+        if (this.isBlockedDomain(reqHost)) {
+          return request.abort('blockedbyclient')
+        }
+        if (!this.isAllowedDomain(reqHost, url.hostname)) {
+          return request.abort('blockedbyclient')
+        }
+
+        // Backoff gate
+        if (this.driver.options.backoff) {
+          const until = this.perHost.backoffUntil[reqHost]
+          if (until && until > Date.now()) {
+            return request.abort('blockedbyclient')
+          }
+        }
+
+        const allowedTypes = ['document', 'fetch', 'xhr', ...(this.driver.options.noScripts ? [] : ['script'])]
+        const allowedWithAssets = [...allowedTypes, 'image', 'stylesheet', 'font', 'media']
+        const isAllowed = (this.driver.options.blockAssets ? allowedTypes : allowedWithAssets).includes(request.resourceType())
+
         if (
           (responseReceived && request.isNavigationRequest()) ||
           request.frame() !== page.mainFrame() ||
-          !['document', 'fetch', 'xhr', ...(this.driver.options.noScripts ? [] : ['script'])].includes(
-            request.resourceType()
-          )
+          !isAllowed
         ) {
           request.abort('blockedbyclient')
         } else {
           await this.emit('request', { page, request })
+
+          // Per-host rate limiting (opt-in)
+          if (this.driver.options.rateLimitMs > 0) {
+            const now = Date.now()
+            const last = this.perHost.lastRequestAt[reqHost] || 0
+            const wait = this.driver.options.rateLimitMs - (now - last)
+            if (wait > 0 && wait < this.driver.options.maxWait) {
+              await sleep(wait)
+            }
+            this.perHost.lastRequestAt[reqHost] = Date.now()
+          }
 
           if (Object.keys(this.driver.options.headers).length) {
             const headers = {
@@ -697,6 +1025,33 @@ class Site {
         return
       }
 
+      // Backoff handling on 429/503
+      try {
+        if (this.driver.options.backoff) {
+          const status = response.status()
+          if (status === 429 || status === 503) {
+            let delayMs = status === 429 ? 5000 : 10000
+            const ra = response.headers()['retry-after']
+            if (ra) {
+              const n = parseInt(ra, 10)
+              if (!Number.isNaN(n)) {
+                delayMs = Math.min(60000, Math.max(0, n * 1000))
+              } else {
+                const d = Date.parse(ra)
+                if (!Number.isNaN(d)) {
+                  delayMs = Math.min(60000, Math.max(0, d - Date.now()))
+                }
+              }
+            }
+            try {
+              const h = new URL(response.url()).hostname
+              this.perHost.backoffUntil[h] = Date.now() + delayMs
+              this.log(`Backoff set for ${h} (${delayMs}ms) due to ${status}`, 'driver', 'warn')
+            } catch {}
+          }
+        }
+      } catch {}
+
       try {
         if (
           response.status() < 300 &&
@@ -705,7 +1060,7 @@ class Site {
         ) {
           const scripts = await response.text()
 
-          await this.onDetect(response.url(), analyze({ scripts }), 'scripts')
+          await this.onDetect(response.url(), analyze({ scripts }, this.driver.activeTechnologies), 'scripts')
         }
       } catch (error) {
         if (error.constructor.name !== 'ProtocolError') {
@@ -758,7 +1113,13 @@ class Site {
             ? response.securityDetails().issuer()
             : ''
 
-          await this.onDetect(url, analyze({ headers, certIssuer }), 'headers, certIssuer')
+          const __hdrStart = Date.now()
+          await this.onDetect(url, analyze({ headers, certIssuer }, this.driver.activeTechnologies), 'headers, certIssuer')
+          const __hdrMs = Date.now() - __hdrStart
+          try {
+            const timings = this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings
+            if (timings) timings.headers = (timings.headers || 0) + __hdrMs
+          } catch (e) { /* ignore */ }
 
           await this.emit('response', { page, response, headers, certIssuer })
         }
@@ -770,7 +1131,16 @@ class Site {
     })
 
     try {
-      await page.goto(url.href)
+      const __navStart = Date.now()
+      await page.goto(url.href, {
+        waitUntil: this.driver.options.fast ? 'domcontentloaded' : 'load',
+        timeout: this.driver.options.maxWait,
+      })
+      const __navMs = Date.now() - __navStart
+      this.analyzedUrls[url.href].navMs = __navMs
+      if (this.analyzedUrls[url.href].timings) {
+        this.analyzedUrls[url.href].timings.nav = __navMs
+      }
 
       if (page.url() === 'about:blank') {
         const error = new Error(`The page failed to load (${url})`)
@@ -781,10 +1151,24 @@ class Site {
       }
 
       if (!this.driver.options.noScripts) {
-        const ms = this.driver.options.fast ? 1000 : 3000;
-        this.log(`Sleeping for ${ms} ms (after chromium.goto)`);
-        await sleep(ms);
-        this.log(`Slept for ${ms} ms (after chromium.goto)`);
+        const idleTime = this.driver.options.fast ? 500 : 1000
+        const timeout = this.driver.options.fast ? 1500 : 3000
+        this.log(`Waiting for network idle (idleTime=${idleTime}ms, timeout=${timeout}ms) or timeout sleep fallback`)
+        const __idleStart = Date.now()
+        try {
+          // Prefer early bailout when network becomes idle; otherwise fall back to a short sleep
+          await Promise.race([
+            page.waitForNetworkIdle({ idleTime, timeout }).catch(() => {}),
+            sleep(timeout),
+          ])
+        } catch (e) {
+          // Ignore and continue
+        }
+        const __idleMs = Date.now() - __idleStart
+        if (this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings) {
+          this.analyzedUrls[url.href].timings.idle = __idleMs
+        }
+        this.log(`Continuing after network idle wait (or timeout)`)
       }
 
       // page.on('console', (message) => this.log(message.text()))
@@ -793,13 +1177,12 @@ class Site {
       let cookies = {}
       let cookieNames = []
       try {
-        const cookieResponse = await page._client().send('Network.getAllCookies');
-        cookieResponse.cookies.forEach(cookie => {
+        // Only retrieve cookies scoped to the current page URL to avoid cross-site leakage in multi-URL runs
+        const cookieList = await page.cookies();
+        cookieList.forEach(cookie => {
           cookies[cookie.name.toLowerCase()] = [cookie.value];
           cookieNames.push(cookie.name);
         });
-        // this.log(cookies);
-        // this.log(cookieNames);
       } catch (error) {
         error.message += ` (${url})`
 
@@ -807,27 +1190,18 @@ class Site {
       }
 
       // HTML
+      const __htmlStart = Date.now()
       let html = await this.promiseTimeout(page.content(), '', 'Timeout (html)')
+      const __htmlMs = Date.now() - __htmlStart
+      if (this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings) {
+        this.analyzedUrls[url.href].timings.html = __htmlMs
+      }
 
       if (this.driver.options.htmlMaxCols && this.driver.options.htmlMaxRows) {
-        const batches = []
-        const rows = html.length / this.driver.options.htmlMaxCols
-
-        for (let i = 0; i < rows; i += 1) {
-          if (
-            i < this.driver.options.htmlMaxRows / 2 ||
-            i > rows - this.driver.options.htmlMaxRows / 2
-          ) {
-            batches.push(
-              html.slice(
-                i * this.driver.options.htmlMaxCols,
-                (i + 1) * this.driver.options.htmlMaxCols
-              )
-            )
-          }
-        }
-
-        html = batches.join('\n')
+        html = limitHtml(html, {
+          maxRows: this.driver.options.htmlMaxRows,
+          maxCols: this.driver.options.htmlMaxCols,
+        })
       }
 
       let links = []
@@ -997,11 +1371,11 @@ class Site {
             // JavaScript
             js = this.driver.options.noScripts
               ? []
-              : await this.promiseTimeout(getJs(page), [], 'Timeout (js)')
+              : await this.promiseTimeout(getJs(page, this.driver.activeTechnologies), [], 'Timeout (js)')
           })(),
           (async () => {
             // DOM
-            dom = await this.promiseTimeout(getDom(page), [], 'Timeout (dom)')
+            dom = await this.promiseTimeout(getDom(page, this.driver.activeTechnologies), [], 'Timeout (dom)')
           })(),
         ])
       }
@@ -1031,8 +1405,18 @@ class Site {
         });
       }
 
-      const analyzedDom = analyzeDom(dom);
-      const analyzedJs = analyzeJs(js);
+      const __domStart = Date.now();
+      const analyzedDom = analyzeDom(dom, this.driver.activeTechnologies);
+      const __domMs = Date.now() - __domStart;
+      if (this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings) {
+        this.analyzedUrls[url.href].timings.dom = __domMs;
+      }
+      const __jsStart = Date.now();
+      const analyzedJs = analyzeJs(js, this.driver.activeTechnologies);
+      const __jsMs = Date.now() - __jsStart;
+      if (this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings) {
+        this.analyzedUrls[url.href].timings.js = __jsMs;
+      }
       const analyzedOthers = analyze({
         url,
         cookies,
@@ -1043,10 +1427,10 @@ class Site {
         scripts,
         scriptSrc,
         meta,
-      });
+      }, this.driver.activeTechnologies);
       await this.onDetect(url, [analyzedDom, analyzedJs, analyzedOthers].flat(), 'dom, js, url, cookies, cookieNames, html, text, css, scripts, scriptSrc, meta')
 
-      const reducedLinks = Array.prototype.reduce.call(
+      let reducedLinks = Array.prototype.reduce.call(
         links,
         (results, link) => {
           if (
@@ -1067,6 +1451,22 @@ class Site {
         },
         []
       )
+
+      // Apply robots.txt filtering and allowlist for crawled links
+      if (this.driver.options.respectRobots) {
+        const filtered = []
+        for (const l of reducedLinks) {
+          try {
+            if (await this.isAllowedByRobots(l)) filtered.push(l)
+          } catch {
+            filtered.push(l)
+          }
+        }
+        reducedLinks = filtered
+      }
+      if (this.driver.options.allowDomains && this.driver.options.allowDomains.length) {
+        reducedLinks = reducedLinks.filter((l) => this.isAllowedDomain(l.hostname, url.hostname))
+      }
 
       await this.emit('goto', {
         page,
@@ -1132,7 +1532,28 @@ class Site {
     let page
 
     try {
-      page = await this.driver.browser.newPage()
+      if (!this.context) {
+        const browser = this.driver.browser
+        try {
+          if (browser && typeof browser.createIncognitoBrowserContext === 'function') {
+            this.context = await browser.createIncognitoBrowserContext()
+          } else if (browser && typeof browser.createBrowserContext === 'function') {
+            try {
+              this.context = await browser.createBrowserContext({ incognito: true })
+            } catch (e) {
+              this.context = null
+            }
+          } else {
+            this.context = null
+          }
+        } catch (e) {
+          this.context = null
+        }
+        if (!this.context) {
+          this.log('Incognito browser context not available; falling back to default context', 'driver', 'warn')
+        }
+      }
+      page = this.context ? await this.context.newPage() : await this.driver.browser.newPage()
 
       if (!page || page.isClosed()) {
         throw new Error('Page did not open')
@@ -1144,7 +1565,28 @@ class Site {
 
       await this.driver.init()
 
-      page = await this.driver.browser.newPage()
+      if (!this.context) {
+        const browser = this.driver.browser
+        try {
+          if (browser && typeof browser.createIncognitoBrowserContext === 'function') {
+            this.context = await browser.createIncognitoBrowserContext()
+          } else if (browser && typeof browser.createBrowserContext === 'function') {
+            try {
+              this.context = await browser.createBrowserContext({ incognito: true })
+            } catch (e) {
+              this.context = null
+            }
+          } else {
+            this.context = null
+          }
+        } catch (e) {
+          this.context = null
+        }
+        if (!this.context) {
+          this.log('Incognito browser context not available on retry; using default context', 'driver', 'warn')
+        }
+      }
+      page = this.context ? await this.context.newPage() : await this.driver.browser.newPage()
     }
 
     this.pages.push(page)
@@ -1167,6 +1609,7 @@ class Site {
   }
 
   async analyze(url = this.originalUrl, index = 1, depth = 1) {
+      const __anStart = Date.now()
     if (this.driver.options.recursive) {
       const ms = this.driver.options.delay * index;
       this.log(`Sleeping for ${ms} ms (before recursive)`);
@@ -1198,6 +1641,30 @@ class Site {
           this.analyzedUrls[url.href] = {
             status: this.analyzedUrls[url.href]?.status || 0,
             error: error.message || error.toString(),
+            timings: this.analyzedUrls[url.href]?.timings || {},
+          }
+
+          // Fallback: if navigation timed out, attempt lightweight HTML-only analysis via direct fetch
+          const isTimeout = error.code === 'WAPPALYZER_TIMEOUT_ERROR' || /Timeout/i.test(error.message || '')
+          if (isTimeout) {
+            try {
+              const __fbStart = Date.now()
+              const body = await get(new URL(url.href), {
+                userAgent: this.driver.options.userAgent,
+                timeout: Math.min(this.driver.options.maxWait, 3000),
+              })
+              const html = this.driver.options.htmlMaxCols && this.driver.options.htmlMaxRows
+                ? limitHtml(body, { maxRows: this.driver.options.htmlMaxRows, maxCols: this.driver.options.htmlMaxCols })
+                : body
+              const fbDetections = analyze({ url, html, text: '' }, this.driver.activeTechnologies)
+              await this.onDetect(url, fbDetections, 'fallback: html')
+              const t = this.analyzedUrls[url.href].timings || {}
+              t.html = (t.html || 0) + (Date.now() - __fbStart)
+              this.analyzedUrls[url.href].timings = t
+              this.log(`Fallback HTML-only analysis succeeded for ${url.href}`, 'driver', 'warn')
+            } catch (fbErr) {
+              this.log(`Fallback HTML-only analysis failed for ${url.href}: ${fbErr.message || String(fbErr)}`, 'driver', 'warn')
+            }
           }
 
           error.message += ` (${url})`
@@ -1243,9 +1710,26 @@ class Site {
         )
       : undefined
 
+    const __resolveStart = Date.now()
+    let __resolvedTechs = resolve(this.detections)
+    const __resolveMs = Date.now() - __resolveStart
+    // If category filter is active, restrict resolved technologies to selected categories
+    const __catIds = (this.driver.options.categoryIds || [])
+    if (__catIds.length > 0) {
+      const __catSet = new Set(__catIds)
+      __resolvedTechs = (__resolvedTechs || []).filter((item) => {
+        const cats = item && item.categories
+        return Array.isArray(cats) && cats.some(({ id }) => __catSet.has(id))
+      })
+    }
+    try {
+      const t = this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings
+      if (t) t.resolve = __resolveMs
+    } catch (e) { /* ignore */ }
+
     const results = {
       urls: this.analyzedUrls,
-      technologies: resolve(this.detections).map(
+      technologies: __resolvedTechs.map(
         ({
           slug,
           name,
@@ -1282,6 +1766,32 @@ class Site {
     }
 
     await this.emit('analyze', results)
+
+    if (this.driver.options.traceTimings) {
+      const nav = (this.analyzedUrls[url.href] && this.analyzedUrls[url.href].navMs) || null
+      const total = Date.now() - __anStart
+      const t = (this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings) || {}
+      const timings = {
+        nav: t.nav ?? nav,
+        idle: t.idle ?? null,
+        html: t.html ?? null,
+        headers: t.headers ?? null,
+        js: t.js ?? null,
+        dom: t.dom ?? null,
+        resolve: t.resolve ?? null,
+        total,
+      }
+      const line = JSON.stringify({ url: String(url), timings })
+      // eslint-disable-next-line no-console
+      console.log(line)
+      if (this.driver.options.traceSave) {
+        try {
+          fs.appendFileSync(this.driver.options.traceSave, `${line}\n`)
+        } catch (e) {
+          this.error(new Error(`Failed to append timings to file: ${e.message || String(e)}`))
+        }
+      }
+    }
 
     return results
   }
@@ -1395,7 +1905,7 @@ class Site {
           `Probe DNS ok: (${Object.values(dnsRecords).flat().length} records)`
         )
 
-        await this.onDetect(url, analyze({ dns: dnsRecords }), 'dns')
+        await this.onDetect(url, analyze({ dns: dnsRecords }, this.driver.activeTechnologies), 'dns')
 
         resolve()
       }),
@@ -1456,9 +1966,10 @@ class Site {
           resolved.some(({ name: _name }) => _name === name)
         ),
         ...Wappalyzer.categoryRequires.filter(({ categoryId }) =>
-          resolved.some(({ categories }) =>
-            categories.some(({ id }) => id === categoryId)
-          )
+          resolved.some((item) => {
+            const categories = item && item.categories
+            return Array.isArray(categories) && categories.some(({ id }) => id === categoryId)
+          })
         ),
       ]
 
@@ -1530,6 +2041,14 @@ class Site {
         }
       })
     )
+
+    try {
+      if (this.context && typeof this.context.close === 'function') {
+        await this.context.close()
+      }
+    } catch (e) {
+      // ignore context close errors
+    }
 
     this.log('Site closed')
   }

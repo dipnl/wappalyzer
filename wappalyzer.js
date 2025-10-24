@@ -9,6 +9,24 @@ const benchmarkEnabled =
 
 let benchmarks = []
 
+// Memoization cache for regex matches during a single analyze() run
+let __matchMemo = new Map()
+
+function __memoKey(regex, value) {
+  // Using source+flags is stable per compiled pattern
+  return `${regex.source}__${regex.flags}__${value}`
+}
+
+function __execMemo(regex, value) {
+  const key = __memoKey(regex, value)
+  if (__matchMemo.has(key)) {
+    return __matchMemo.get(key)
+  }
+  const res = regex.exec(value)
+  __matchMemo.set(key, res)
+  return res
+}
+
 function benchmark(duration, pattern, value = '', technology) {
   if (!benchmarkEnabled) {
     return
@@ -297,6 +315,7 @@ const Wappalyzer = {
    */
   analyze(items, technologies = Wappalyzer.technologies) {
     benchmarks = []
+    __matchMemo = new Map()
 
     const oo = Wappalyzer.analyzeOneToOne
     const om = Wappalyzer.analyzeOneToMany
@@ -380,7 +399,7 @@ const Wappalyzer = {
       } = data[name]
 
       technologies.push({
-        categories: cats || [],
+        categories: (cats || []).map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)),
         certIssuer: transform(certIssuer),
         cookies: transform(cookies),
         cookieNames: transform(cookieNames),
@@ -586,7 +605,7 @@ const Wappalyzer = {
     return technology[type].reduce((technologies, pattern) => {
       const startTime = Date.now()
 
-      const matches = pattern.regex.exec(value)
+      const matches = __execMemo(pattern.regex, value)
 
       if (matches) {
         technologies.push({
@@ -620,7 +639,7 @@ const Wappalyzer = {
       patterns.forEach((pattern) => {
         const startTime = Date.now()
 
-        const matches = pattern.regex.exec(value)
+        const matches = __execMemo(pattern.regex, value)
 
         if (matches) {
           technologies.push({
@@ -664,7 +683,7 @@ const Wappalyzer = {
         values.forEach((value) => {
           const startTime = Date.now()
 
-          const matches = pattern.regex.exec(value)
+          const matches = __execMemo(pattern.regex, value)
 
           if (matches) {
             technologies.push({
