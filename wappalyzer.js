@@ -492,7 +492,7 @@ const Wappalyzer = {
   },
 
   /**
-   * Assign categories for data.
+   * Assign categoryMap for data.
    * @param {Object} data
    */
   setCategories(data) {

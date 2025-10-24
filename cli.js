@@ -1,67 +1,9 @@
 #!/usr/bin/env node
 
 const Driver = require('./driver')
+const { parseArgs } = require('./src/cli/args')
 
-const args = process.argv.slice(2)
-
-const options = {}
-
-let urls = []
-let arg
-
-const aliases = {
-  a: 'userAgent',
-  b: 'batchSize',
-  d: 'debug',
-  f: 'fast',
-  t: 'delay',
-  h: 'help',
-  H: 'header',
-  D: 'maxDepth',
-  m: 'maxUrls',
-  p: 'probe',
-  P: 'pretty',
-  r: 'recursive',
-  w: 'maxWait',
-  n: 'noScripts',
-  N: 'noRedirect',
-  e: 'extended',
-}
-
-while (true) {
-  // eslint-disable-line no-constant-condition
-  arg = args.shift()
-
-  if (!arg) {
-    break
-  }
-
-  const matches = /^-?-([^=]+)(?:=(.+)?)?/.exec(arg)
-
-  if (matches) {
-    const key =
-      aliases[matches[1]] ||
-      matches[1].replace(/-\w/g, (_matches) => _matches[1].toUpperCase())
-    // eslint-disable-next-line no-nested-ternary
-    const value = matches[2]
-      ? matches[2]
-      : args[0] && !args[0].startsWith('-')
-      ? args.shift()
-      : true
-
-    if (options[key]) {
-      if (!Array.isArray(options[key])) {
-        options[key] = [options[key]]
-      }
-
-    options[key].push(value)
-    } else {
-      options[key] = value
-    }
-  } else {
-    urls.push(arg)
-  }
-}
+const { options, urls } = parseArgs(process.argv.slice(2))
 
 if (!urls.length || options.help) {
   process.stdout.write(`Usage:
