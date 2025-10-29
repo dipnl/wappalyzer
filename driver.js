@@ -22,6 +22,8 @@ const chromiumArgs = CHROMIUM_ARGS
       // '--allow-running-insecure-content',
       // '--disable-web-security',
       // `--user-data-dir=${CHROMIUM_DATA_DIR || '/tmp/chromium'}`,
+      '--disable-features=HttpsFirstBalancedModeAutoEnable',
+      '--allow-running-insecure-content',
     ]
 
 const extensions = /^([^.]+$|\.(asp|aspx|cgi|htm|html|jsp|php)$)/
