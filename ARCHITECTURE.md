@@ -6,6 +6,12 @@ Key modules
 - src/config.js: Centralized loading of categories and technologies, including optional custom overrides from wappalyzer-custom-*.json files.
 - src/utils.js: Small cross-cutting utilities shared by the driver and CLI (sleep and limitHtml).
 - driver.js: Puppeteer-based navigation, page data collection, and delegation to the Wappalyzer core to analyze results.
+- src/driver/browser.js: Browser lifecycle (launch/connect/close) with Chromium flags and environment overrides.
+- src/driver/extract.js: DOM and JS extraction helpers used by the driver.
+- src/driver/policies.js: Domain allow/block helpers, robots.txt fetching/parsing, and reliability helpers (computeBackoffDelay, computeRateLimitWait) used by the driver.
+- src/driver/browser.js: Chromium launch/connect lifecycle and env overrides.
+- src/driver/analyze.js: Thin facade that re-exports analyze helpers from wappalyzer.js, easing future modularity.
+- src/driver/output.js: Output shaping utilities (currently a placeholder) to keep CLI formatting separate.
 - wappalyzer.js: Core detection logic (unchanged in behavior). Provides methods to set data, analyze content, and resolve detections.
 - cli.js: CLI interface, flag parsing, and orchestration.
 

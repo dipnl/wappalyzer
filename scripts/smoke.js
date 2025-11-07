@@ -15,13 +15,13 @@ function print(label, r) {
 }
 
 console.log('Smoke: basic URL')
-let r = run('node', ['cli.js', 'https://example.com', '--pretty'])
+let r = run('node', ['cli.js', 'https://example.com', '--pretty', '--no-scripts', '--fast', '-w', '3000'])
 print('basic', r)
 
 console.log('Smoke: multiple URLs with batch')
-r = run('node', ['cli.js', 'https://a.example.com', 'https://b.example.com', '-b', '2', '--pretty'])
+r = run('node', ['cli.js', 'https://example.com', 'https://www.iana.org/domains/reserved', '-b', '2', '--pretty', '--no-scripts', '--fast', '-w', '3000'])
 print('batch', r)
 
 console.log('Smoke: recursive with limits')
-r = run('node', ['cli.js', 'https://example.com', '-r', '-D', '1', '-m', '5', '-w', '5000', '--pretty'])
+r = run('node', ['cli.js', 'https://example.com', '-r', '-D', '1', '-m', '3', '-w', '3000', '--pretty', '--no-scripts', '--fast'])
 print('recursive', r)

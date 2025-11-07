@@ -1,32 +1,28 @@
 const fs = require('fs')
 const dns = require('dns').promises
 const path = require('path')
-const http = require('http')
-const https = require('https')
-const puppeteer = require('puppeteer')
 const Wappalyzer = require('./wappalyzer')
 const { sleep, limitHtml } = require('./src/utils')
 const { loadConfig } = require('./src/config')
+const { getJs, getDom } = require('./src/driver/extract')
+const {
+  hostMatches: _hostMatches,
+  isBlockedDomain: _isBlockedDomain,
+  isAllowedDomain: _isAllowedDomain,
+  fetchRobots: _fetchRobots,
+  isAllowedByRobots: _isAllowedByRobots,
+} = require('./src/driver/policies')
+const { computeBackoffDelay, computeRateLimitWait } = require('./src/driver/policies')
+const { launchOrConnect } = require('./src/driver/browser')
+const { analyzeJs, analyzeDom } = require('./src/driver/analyze-helpers')
+const { reduceLinks, applyCrawlFilters } = require('./src/driver/links')
+const { get } = require('./src/driver/net')
+const { collectPageData } = require('./src/driver/pageData')
+const { setPageData, getPageData, getCookieNames } = require('./src/driver/cache')
 
-const { setTechnologies, setCategories, analyze, analyzeManyToMany, resolve } = Wappalyzer
+const { setTechnologies, setCategories } = Wappalyzer
+const { analyze, resolve } = require('./src/driver/analyze')
 
-const { CHROMIUM_BIN, CHROMIUM_DATA_DIR, CHROMIUM_WEBSOCKET, CHROMIUM_ARGS } = process.env
-
-const chromiumArgs = CHROMIUM_ARGS
-  ? CHROMIUM_ARGS.split(' ')
-  : [
-      '--headless',
-      // '--single-process',
-      // '--no-sandbox',
-      // '--no-zygote',
-      '--disable-gpu',
-      // '--ignore-certificate-errors',
-      // '--allow-running-insecure-content',
-      // '--disable-web-security',
-      // `--user-data-dir=${CHROMIUM_DATA_DIR || '/tmp/chromium'}`,
-    ]
-
-const extensions = /^([^.]+$|\.(asp|aspx|cgi|htm|html|jsp|php)$)/
 
 const { categoryMap, technologies } = loadConfig()
 
@@ -35,280 +31,8 @@ setCategories(categoryMap)
 
 const xhrDebounce = []
 
-function getJs(page, technologies = Wappalyzer.technologies) {
-  return page.evaluate((technologies) => {
-    return technologies
-      .filter(({ js }) => Object.keys(js).length)
-      .map(({ name, js }) => ({ name, chains: Object.keys(js) }))
-      .reduce((technologies, { name, chains }) => {
-        chains.forEach((chain) => {
-          chain = chain.replace(/\[([^\]]+)\]/g, '.$1')
 
-          const parts = chain.split('.')
 
-          const first = parts.shift()
-          let root
-          try {
-            if (/^[a-z_$][a-z0-9_$]*$/i.test(first)) {
-              root = window[first]
-            } else {
-              // Invalid identifier must not default to window — prevents false positives for hyphenated keys
-              root = undefined
-            }
-          } catch (e) {
-            root = undefined
-          }
-
-          const value = parts.reduce(
-            (value, method) =>
-              value &&
-              value instanceof Object &&
-              Object.prototype.hasOwnProperty.call(value, method)
-                ? value[method]
-                : '__UNDEFINED__',
-            root || '__UNDEFINED__'
-          )
-
-          if (value !== '__UNDEFINED__') {
-            technologies.push({
-              name,
-              chain,
-              value:
-                typeof value === 'string' || typeof value === 'number'
-                  ? value
-                  : !!value,
-            })
-          }
-        })
-
-        return technologies
-      }, [])
-  }, technologies)
-}
-
-function analyzeJs(js, technologies = Wappalyzer.technologies) {
-  return js
-    .map(({ name, chain, value }) => {
-      return analyzeManyToMany(
-        technologies.find(({ name: _name }) => name === _name),
-        'js',
-        { [chain]: [value] }
-      )
-    })
-    .flat()
-}
-
-function getDom(page, technologies = Wappalyzer.technologies) {
-  return page.evaluate((technologies) => {
-    return technologies
-      .filter(({ dom }) => dom && dom.constructor === Object)
-      .reduce((technologies, { name, dom }) => {
-        const toScalar = (value) =>
-          typeof value === 'string' || typeof value === 'number'
-            ? value
-            : !!value
-
-        Object.keys(dom).forEach((selector) => {
-          let nodes = []
-
-          try {
-            nodes = document.querySelectorAll(selector)
-          } catch (error) {
-            // Continue
-          }
-
-          if (!nodes.length) {
-            return
-          }
-
-          dom[selector].forEach(({ exists, text, properties, attributes }) => {
-            nodes.forEach((node) => {
-              if (
-                technologies.filter(({ name: _name }) => _name === name)
-                  .length >= 50
-              ) {
-                return
-              }
-
-              if (
-                exists &&
-                technologies.findIndex(
-                  ({ name: _name, selector: _selector, exists }) =>
-                    name === _name && selector === _selector && exists === ''
-                ) === -1
-              ) {
-                technologies.push({
-                  name,
-                  selector,
-                  exists: '',
-                })
-              }
-
-              if (text) {
-                // eslint-disable-next-line unicorn/prefer-text-content
-                const value = (
-                  node.textContent ? node.textContent.trim() : ''
-                ).slice(0, 1000000)
-
-                if (
-                  value &&
-                  technologies.findIndex(
-                    ({ name: _name, selector: _selector, text }) =>
-                      name === _name && selector === _selector && text === value
-                  ) === -1
-                ) {
-                  technologies.push({
-                    name,
-                    selector,
-                    text: value,
-                  })
-                }
-              }
-
-              if (properties) {
-                Object.keys(properties).forEach((property) => {
-                  if (
-                    Object.prototype.hasOwnProperty.call(node, property) &&
-                    technologies.findIndex(
-                      ({
-                        name: _name,
-                        selector: _selector,
-                        property: _property,
-                        value,
-                      }) =>
-                        name === _name &&
-                        selector === _selector &&
-                        property === _property &&
-                        value === toScalar(value)
-                    ) === -1
-                  ) {
-                    const value = node[property]
-
-                    if (typeof value !== 'undefined') {
-                      technologies.push({
-                        name,
-                        selector,
-                        property,
-                        value: toScalar(value),
-                      })
-                    }
-                  }
-                })
-              }
-
-              if (attributes) {
-                Object.keys(attributes).forEach((attribute) => {
-                  if (
-                    node.hasAttribute(attribute) &&
-                    technologies.findIndex(
-                      ({
-                        name: _name,
-                        selector: _selector,
-                        attribute: _atrribute,
-                        value,
-                      }) =>
-                        name === _name &&
-                        selector === _selector &&
-                        attribute === _atrribute &&
-                        value === toScalar(value)
-                    ) === -1
-                  ) {
-                    const value = node.getAttribute(attribute)
-
-                    technologies.push({
-                      name,
-                      selector,
-                      attribute,
-                      value: toScalar(value),
-                    })
-                  }
-                })
-              }
-            })
-          })
-        })
-
-        return technologies
-      }, [])
-  }, technologies)
-}
-
-function analyzeDom(dom, technologies = Wappalyzer.technologies) {
-  return dom
-    .map(({ name, selector, exists, text, property, attribute, value }) => {
-      const technology = technologies.find(tech => tech.name === name);
-
-      if (typeof exists !== 'undefined') {
-        return analyzeManyToMany(technology, 'dom.exists', {
-          [selector]: [''],
-        })
-      }
-
-      if (typeof text !== 'undefined') {
-        return analyzeManyToMany(technology, 'dom.text', {
-          [selector]: [text],
-        })
-      }
-
-      if (typeof property !== 'undefined') {
-        return analyzeManyToMany(technology, `dom.properties.${property}`, {
-          [selector]: [value],
-        })
-      }
-
-      if (typeof attribute !== 'undefined') {
-        return analyzeManyToMany(technology, `dom.attributes.${attribute}`, {
-          [selector]: [value],
-        })
-      }
-    })
-    .flat()
-}
-
-function get(url, options = {}) {
-  const timeout =
-    options.timeout ||
-    (this.options.fast
-      ? this.Math.min(this.options.maxWait, 3000)
-      : this.options.maxWait)
-
-  if (['http:', 'https:'].includes(url.protocol)) {
-    const { get } = url.protocol === 'http:' ? http : https
-
-    return new Promise((resolve, reject) =>
-      get(
-        url,
-        {
-          rejectUnauthorized: false,
-          headers: {
-            'User-Agent': options.userAgent,
-          },
-        },
-        (response) => {
-          if (response.statusCode >= 300) {
-            return reject(
-              new Error(`${response.statusCode} ${response.statusMessage}`)
-            )
-          }
-
-          response.setEncoding('utf8')
-
-          let body = ''
-
-          response.on('data', (data) => (body += data))
-          response.on('error', (error) => reject(new Error(error.message)))
-          response.on('end', () => resolve(body))
-        }
-      )
-        .setTimeout(timeout, () =>
-          reject(new Error(`Timeout (${url}, ${timeout}ms)`))
-        )
-        .on('error', (error) => reject(new Error(error.message)))
-    )
-  } else {
-    throw new Error(`Invalid protocol: ${url.protocol}`)
-  }
-}
 
 class Driver {
   constructor(options = {}) {
@@ -499,7 +223,21 @@ class Driver {
       setTechnologies(merged)
 
       // Prepare active technologies filtered by category IDs if provided
-      const ids = Array.isArray(this.options.categoryIds) ? this.options.categoryIds : []
+      let ids = Array.isArray(this.options.categoryIds) ? this.options.categoryIds : []
+
+      // Backward-compatible: derive categoryIds from --category flag if provided
+      if (ids.length === 0 && typeof this.options.category !== 'undefined') {
+        const raw = Array.isArray(this.options.category)
+          ? this.options.category
+          : String(this.options.category).split(',')
+        ids = raw
+          .map((s) => parseInt(String(s).trim(), 10))
+          .filter((n) => !Number.isNaN(n))
+        // De-duplicate and persist on options for downstream use/debugging
+        ids = Array.from(new Set(ids))
+        this.options.categoryIds = ids
+      }
+
       if (ids.length > 0) {
         const idSet = new Set(ids)
         this.activeTechnologies = (Wappalyzer.technologies || []).filter((t) => {
@@ -526,24 +264,12 @@ class Driver {
       this.log(`Launching browser (attempt ${attempt})...`)
 
       try {
-        if (CHROMIUM_WEBSOCKET) {
-          this.browser = await puppeteer.connect({
-            ignoreHTTPSErrors: true,
-            acceptInsecureCerts: true,
-            browserWSEndpoint: CHROMIUM_WEBSOCKET,
-          })
-        } else {
-          this.browser = await puppeteer.launch({
-            headless: 'new',
-            ignoreHTTPSErrors: true,
-            acceptInsecureCerts: true,
-            args: chromiumArgs,
-            executablePath: CHROMIUM_BIN,
-            timeout: this.options.fast
-              ? Math.min(this.options.maxWait, 10000)
-              : this.options.maxWait,
-          })
-        }
+        // Use modular launcher (env-compatible) to start or connect to Chromium
+        this.browser = await launchOrConnect({
+          fast: this.options.fast,
+          maxWait: this.options.maxWait,
+          proxy: this.options.proxy,
+        })
 
         break
       } catch (error) {
@@ -631,26 +357,6 @@ class Driver {
     }
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 class Site {
   constructor(url, headers = {}, driver) {
@@ -766,83 +472,23 @@ class Site {
 
   // Check domain against allow/block lists
   hostMatches(domain, rule) {
-    if (!rule) return false
-    if (domain === rule) return true
-    if (rule.startsWith('.')) {
-      return domain.endsWith(rule)
-    }
-    return domain === rule || domain.endsWith(`.${rule}`)
+    return _hostMatches(domain, rule)
   }
 
   isBlockedDomain(domain) {
-    const { blockDomains = [] } = this.driver.options
-    return blockDomains.some((rule) => this.hostMatches(domain, rule))
+    return _isBlockedDomain(this.driver.options, domain)
   }
 
   isAllowedDomain(domain, mainHost) {
-    const { allowDomains = [] } = this.driver.options
-    if (!allowDomains || !allowDomains.length) return true
-    // Always allow the main host
-    if (domain === mainHost || domain.endsWith(`.${mainHost}`)) return true
-    return allowDomains.some((rule) => this.hostMatches(domain, rule))
+    return _isAllowedDomain(this.driver.options, domain, mainHost)
   }
 
   async fetchRobots(url) {
-    const host = url.hostname
-    if (this.perHost.robots[host]) return this.perHost.robots[host]
-    const robotsUrl = new URL(`${url.protocol}//${host}/robots.txt`)
-    let body = ''
-    try {
-      body = await get(robotsUrl, { timeout: Math.min(3000, this.driver.options.maxWait) })
-    } catch (e) {
-      this.perHost.robots[host] = { allow: [], disallow: [], loaded: true }
-      return this.perHost.robots[host]
-    }
-    const lines = String(body || '')
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-    let active = false
-    const allow = []
-    const disallow = []
-    for (const line of lines) {
-      if (!line || line.startsWith('#')) continue
-      const m = /^(user-agent|allow|disallow)\s*:\s*(.+)$/i.exec(line)
-      if (!m) continue
-      const key = m[1].toLowerCase()
-      const val = m[2].trim()
-      if (key === 'user-agent') {
-        // Activate only for UA *
-        active = val === '*'
-      } else if (active && key === 'allow') {
-        allow.push(val)
-      } else if (active && key === 'disallow') {
-        disallow.push(val)
-      }
-    }
-    this.perHost.robots[host] = { allow, disallow, loaded: true }
-    return this.perHost.robots[host]
+    return _fetchRobots(url, this.driver.options, this.perHost)
   }
 
   async isAllowedByRobots(url) {
-    if (!this.driver.options.respectRobots) return true
-    const { allow, disallow } = await this.fetchRobots(url)
-    const path = url.pathname || '/'
-    const matches = (rule) => {
-      if (rule === '') return true // empty disallow means allow all
-      if (rule === '/') return false
-      return path.startsWith(rule)
-    }
-    let bestAllow = ''
-    let bestDisallow = ''
-    for (const r of allow) {
-      if (matches(r) && r.length > bestAllow.length) bestAllow = r
-    }
-    for (const r of disallow) {
-      if (matches(r) && r.length > bestDisallow.length) bestDisallow = r
-    }
-    if (!bestAllow && !bestDisallow) return true
-    if (bestAllow.length >= bestDisallow.length) return true
-    return false
+    return _isAllowedByRobots(url, this.driver.options, this.perHost)
   }
 
   async goto(url) {
@@ -856,6 +502,24 @@ class Site {
     this.analyzedUrls[url.href] = {
       status: 0,
       timings: {},
+    }
+    // Also map timings to the original URL key to keep a stable bucket across redirects
+    try {
+      if (this.originalUrl && this.originalUrl.href && this.originalUrl.href !== url.href) {
+        this.analyzedUrls[this.originalUrl.href] = this.analyzedUrls[url.href]
+      }
+    } catch (_) { /* ignore */ }
+
+    // Pre-navigation DNS resolve timing
+    try {
+      const __dnsStart = Date.now()
+      const dnsPromise = dns.lookup(url.hostname).catch(() => null)
+      const dnsRes = await this.promiseTimeout(dnsPromise, null, 'Timeout (dns)', this.driver.options.fast ? Math.min(this.driver.options.maxWait, 15000) : this.driver.options.maxWait)
+      const __dnsMs = Date.now() - __dnsStart
+      const t = this.analyzedUrls[url.href].timings
+      t.dns = dnsRes ? __dnsMs : null
+    } catch (_) {
+      // ignore DNS timing errors
     }
 
     // Respect robots.txt before navigation
@@ -877,6 +541,9 @@ class Site {
     }
 
     const page = await this.newPage(url)
+
+    // Track failed script loads (HTTP >= 400) to avoid false positive scriptSrc detections
+    this.failedScriptSrc = new Set()
 
     await page.setRequestInterception(true)
 
@@ -944,7 +611,7 @@ class Site {
           if (this.driver.options.rateLimitMs > 0) {
             const now = Date.now()
             const last = this.perHost.lastRequestAt[reqHost] || 0
-            const wait = this.driver.options.rateLimitMs - (now - last)
+            const wait = computeRateLimitWait(last, now, this.driver.options.rateLimitMs)
             if (wait > 0 && wait < this.driver.options.maxWait) {
               await sleep(wait)
             }
@@ -979,24 +646,16 @@ class Site {
         if (this.driver.options.backoff) {
           const status = response.status()
           if (status === 429 || status === 503) {
-            let delayMs = status === 429 ? 5000 : 10000
             const ra = response.headers()['retry-after']
-            if (ra) {
-              const n = parseInt(ra, 10)
-              if (!Number.isNaN(n)) {
-                delayMs = Math.min(60000, Math.max(0, n * 1000))
-              } else {
-                const d = Date.parse(ra)
-                if (!Number.isNaN(d)) {
-                  delayMs = Math.min(60000, Math.max(0, d - Date.now()))
-                }
-              }
+            const now = Date.now()
+            const delayMs = computeBackoffDelay(status, ra, now, { capMs: 60000, jitterPct: 0 })
+            if (delayMs > 0) {
+              try {
+                const h = new URL(response.url()).hostname
+                this.perHost.backoffUntil[h] = now + delayMs
+                this.log(`Backoff set for ${h} (${delayMs}ms) due to ${status}`, 'driver', 'warn')
+              } catch {}
             }
-            try {
-              const h = new URL(response.url()).hostname
-              this.perHost.backoffUntil[h] = Date.now() + delayMs
-              this.log(`Backoff set for ${h} (${delayMs}ms) due to ${status}`, 'driver', 'warn')
-            } catch {}
           }
         }
       } catch {}
@@ -1010,6 +669,12 @@ class Site {
           const scripts = await response.text()
 
           await this.onDetect(response.url(), analyze({ scripts }, this.driver.activeTechnologies), 'scripts')
+        } else if (
+          response.request().resourceType() === 'script' &&
+          typeof response.status() === 'number' &&
+          response.status() >= 400
+        ) {
+          try { this.failedScriptSrc.add(response.url()) } catch (_) {}
         }
       } catch (error) {
         if (error.constructor.name !== 'ProtocolError') {
@@ -1021,9 +686,18 @@ class Site {
 
       try {
         if (response.url() === url.href) {
+          // Preserve existing record if present and augment; do not clobber timings set earlier
+          const prev = this.analyzedUrls[url.href] || {}
           this.analyzedUrls[url.href] = {
+            ...prev,
             status: response.status(),
           }
+          // Keep original URL key pointing at the same record to avoid losing timings on redirects
+          try {
+            if (this.originalUrl && this.originalUrl.href && this.originalUrl.href !== url.href) {
+              this.analyzedUrls[this.originalUrl.href] = this.analyzedUrls[url.href]
+            }
+          } catch (_) { /* ignore */ }
 
           const rawHeaders = response.headers()
           const headers = {}
@@ -1036,6 +710,14 @@ class Site {
                 : [rawHeaders[key]]),
             ]
           })
+
+          // Capture bytes fetched for main document via Content-Length if present
+          try {
+            const lenHeader = (headers['content-length'] && headers['content-length'][headers['content-length'].length - 1]) || null
+            const bytes = lenHeader != null ? parseInt(String(lenHeader), 10) : null
+            if (!this.analyzedUrls[url.href].timings) this.analyzedUrls[url.href].timings = {}
+            this.analyzedUrls[url.href].timings.bytes = Number.isFinite(bytes) ? bytes : null
+          } catch (_) { /* ignore bytes parse errors */ }
 
           // Prevent cross-domain redirects
           if (response.status() >= 300 && response.status() < 400) {
@@ -1101,11 +783,14 @@ class Site {
 
       if (!this.driver.options.noScripts) {
         const idleTime = this.driver.options.fast ? 500 : 1000
-        const timeout = this.driver.options.fast ? 1500 : 3000
+        // Give non-fast mode substantially more time to settle resources; cap at maxWait
+        const timeout = this.driver.options.fast
+          ? 1500
+          : Math.min(this.driver.options.maxWait || 30000, 10000)
         this.log(`Waiting for network idle (idleTime=${idleTime}ms, timeout=${timeout}ms) or timeout sleep fallback`)
         const __idleStart = Date.now()
         try {
-          // Prefer early bailout when network becomes idle; otherwise fall back to a short sleep
+          // Prefer early bailout when network becomes idle; otherwise fall back to a bounded sleep
           await Promise.race([
             page.waitForNetworkIdle({ idleTime, timeout }).catch(() => {}),
             sleep(timeout),
@@ -1152,6 +837,13 @@ class Site {
           maxCols: this.driver.options.htmlMaxCols,
         })
       }
+      // If we don't have a Content-Length based byte size, approximate from HTML length
+      try {
+        const t = this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings
+        if (t && (typeof t.bytes === 'undefined' || t.bytes === null)) {
+          t.bytes = typeof html === 'string' ? Buffer.byteLength(html, 'utf8') : null
+        }
+      } catch (_) { /* ignore */ }
 
       let links = []
       let text = ''
@@ -1163,173 +855,21 @@ class Site {
       let dom = []
 
       if (html) {
-        await Promise.all([
-          (async () => {
-            // Links
-            links = !this.driver.options.recursive
-              ? []
-              : await this.promiseTimeout(
-                  (
-                    await this.promiseTimeout(
-                      page.evaluateHandle(() =>
-                        Array.from(document.getElementsByTagName('a')).map(
-                          ({
-                            hash,
-                            hostname,
-                            href,
-                            pathname,
-                            protocol,
-                            rel,
-                          }) => ({
-                            hash,
-                            hostname,
-                            href,
-                            pathname,
-                            protocol,
-                            rel,
-                          })
-                        )
-                      ),
-                      { jsonValue: () => [] },
-                      'Timeout (links)'
-                    )
-                  ).jsonValue(),
-                  [],
-                  'Timeout (links)'
-                )
-          })(),
-          (async () => {
-            // Text
-            text = await this.promiseTimeout(
-              (
-                await this.promiseTimeout(
-                  page.evaluateHandle(
-                    () =>
-                      // eslint-disable-next-line unicorn/prefer-text-content
-                      document.body && document.body.innerText
-                  ),
-                  { jsonValue: () => '' },
-                  'Timeout (text)'
-                )
-              ).jsonValue(),
-              '',
-              'Timeout (text)'
-            )
-          })(),
-          (async () => {
-            // CSS
-            css = await this.promiseTimeout(
-              (
-                await this.promiseTimeout(
-                  page.evaluateHandle((maxRows) => {
-                    const css = []
-
-                    try {
-                      if (!document.styleSheets.length) {
-                        return ''
-                      }
-
-                      for (const sheet of Array.from(document.styleSheets)) {
-                        for (const rules of Array.from(sheet.cssRules)) {
-                          css.push(rules.cssText)
-
-                          if (css.length >= maxRows) {
-                            break
-                          }
-                        }
-                      }
-                    } catch (error) {
-                      return ''
-                    }
-
-                    return css.join('\n')
-                  }, this.driver.options.htmlMaxRows),
-                  { jsonValue: () => '' },
-                  'Timeout (css)'
-                )
-              ).jsonValue(),
-              '',
-              'Timeout (css)'
-            )
-          })(),
-          (async () => {
-            // Script tags
-            ;[scriptSrc, scripts] = await this.promiseTimeout(
-              (
-                await this.promiseTimeout(
-                  page.evaluateHandle(() => {
-                    const nodes = Array.from(
-                      document.getElementsByTagName('script')
-                    )
-
-                    return [
-                      nodes
-                        .filter(
-                          ({ src }) =>
-                            src && !src.startsWith('data:text/javascript;')
-                        )
-                        .map(({ src }) => src),
-                      nodes
-                        .map((node) => node.textContent)
-                        .filter((script) => script),
-                    ]
-                  }),
-                  { jsonValue: () => [] },
-                  'Timeout (scripts)'
-                )
-              ).jsonValue(),
-              [],
-              'Timeout (scripts)'
-            )
-          })(),
-          (async () => {
-            // Meta tags
-            meta = await this.promiseTimeout(
-              (
-                await this.promiseTimeout(
-                  page.evaluateHandle(() =>
-                    Array.from(document.querySelectorAll('meta')).reduce(
-                      (metas, meta) => {
-                        const key =
-                          meta.getAttribute('name') ||
-                          meta.getAttribute('property')
-
-                        if (key) {
-                          metas[key.toLowerCase()] =
-                            metas[key.toLowerCase()] || []
-
-                          metas[key.toLowerCase()].push(
-                            meta.getAttribute('content')
-                          )
-                        }
-
-                        return metas
-                      },
-                      {}
-                    )
-                  ),
-                  { jsonValue: () => [] },
-                  'Timeout (meta)'
-                )
-              ).jsonValue(),
-              [],
-              'Timeout (meta)'
-            )
-          })(),
-          (async () => {
-            // JavaScript
-            js = this.driver.options.noScripts
-              ? []
-              : await this.promiseTimeout(getJs(page, this.driver.activeTechnologies), [], 'Timeout (js)')
-          })(),
-          (async () => {
-            // DOM
-            dom = await this.promiseTimeout(getDom(page, this.driver.activeTechnologies), [], 'Timeout (dom)')
-          })(),
-        ])
+        const data = await collectPageData(
+          page,
+          this.driver.options,
+          this.driver.activeTechnologies,
+          this.promiseTimeout.bind(this)
+        )
+        ;({ links, text, css, scripts, scriptSrc, meta, js, dom } = data)
       }
 
-      this.cache[url.href] = {
+      // Filter out scriptSrcs that failed to load (HTTP >= 400) to avoid false positives
+      if (Array.isArray(scriptSrc) && this.failedScriptSrc && this.failedScriptSrc.size > 0) {
+        scriptSrc = scriptSrc.filter((src) => !this.failedScriptSrc.has(src))
+      }
+
+      setPageData(this.cache, url.href, {
         page,
         html,
         text,
@@ -1338,21 +878,8 @@ class Site {
         scripts,
         scriptSrc,
         meta,
-      }
+      })
 
-      if (this.driver.options.dump) {
-        console.log({
-          js,
-          cookies,
-          cookieNames,
-          // html,
-          // text,
-          css,
-          scripts,
-          scriptSrc,
-          meta,
-        });
-      }
 
       const __domStart = Date.now();
       const analyzedDom = analyzeDom(dom, this.driver.activeTechnologies);
@@ -1379,43 +906,10 @@ class Site {
       }, this.driver.activeTechnologies);
       await this.onDetect(url, [analyzedDom, analyzedJs, analyzedOthers].flat(), 'dom, js, url, cookies, cookieNames, html, text, css, scripts, scriptSrc, meta')
 
-      let reducedLinks = Array.prototype.reduce.call(
-        links,
-        (results, link) => {
-          if (
-            results &&
-            Object.prototype.hasOwnProperty.call(
-              Object.getPrototypeOf(results),
-              'push'
-            ) &&
-            link.protocol &&
-            link.protocol.match(/https?:/) &&
-            link.hostname === url.hostname &&
-            extensions.test(link.pathname.slice(-5))
-          ) {
-            results.push(new URL(link.href.split('#')[0]))
-          }
-
-          return results
-        },
-        []
-      )
+      let reducedLinks = reduceLinks(links, url)
 
       // Apply robots.txt filtering and allowlist for crawled links
-      if (this.driver.options.respectRobots) {
-        const filtered = []
-        for (const l of reducedLinks) {
-          try {
-            if (await this.isAllowedByRobots(l)) filtered.push(l)
-          } catch {
-            filtered.push(l)
-          }
-        }
-        reducedLinks = filtered
-      }
-      if (this.driver.options.allowDomains && this.driver.options.allowDomains.length) {
-        reducedLinks = reducedLinks.filter((l) => this.isAllowedDomain(l.hostname, url.hostname))
-      }
+      reducedLinks = await applyCrawlFilters(reducedLinks, this, url)
 
       await this.emit('goto', {
         page,
@@ -1600,7 +1094,7 @@ class Site {
               const __fbStart = Date.now()
               const body = await get(new URL(url.href), {
                 userAgent: this.driver.options.userAgent,
-                timeout: Math.min(this.driver.options.maxWait, 3000),
+                timeoutMs: Math.min(this.driver.options.maxWait, 3000),
               })
               const html = this.driver.options.htmlMaxCols && this.driver.options.htmlMaxRows
                 ? limitHtml(body, { maxRows: this.driver.options.htmlMaxRows, maxCols: this.driver.options.htmlMaxCols })
@@ -1708,10 +1202,7 @@ class Site {
         })
       ),
       patterns,
-      cookieNames: Object.values(this.cache).map(cache => cache.cookieNames).flat().reduce((list, name) => {
-        if (!list.includes(name)) list.push(name);
-        return list;
-      }, []),
+      cookieNames: getCookieNames(this.cache),
     }
 
     await this.emit('analyze', results)
@@ -1721,6 +1212,7 @@ class Site {
       const total = Date.now() - __anStart
       const t = (this.analyzedUrls[url.href] && this.analyzedUrls[url.href].timings) || {}
       const timings = {
+        dns: t.dns ?? null,
         nav: t.nav ?? nav,
         idle: t.idle ?? null,
         html: t.html ?? null,
@@ -1728,18 +1220,11 @@ class Site {
         js: t.js ?? null,
         dom: t.dom ?? null,
         resolve: t.resolve ?? null,
+        bytes: t.bytes ?? null,
         total,
       }
-      const line = JSON.stringify({ url: String(url), timings })
-      // eslint-disable-next-line no-console
-      console.log(line)
-      if (this.driver.options.traceSave) {
-        try {
-          fs.appendFileSync(this.driver.options.traceSave, `${line}\n`)
-        } catch (e) {
-          this.error(new Error(`Failed to append timings to file: ${e.message || String(e)}`))
-        }
-      }
+      const { printAndSaveTimings } = require('./src/driver/trace')
+      printAndSaveTimings(this.driver.options, String(url), timings)
     }
 
     return results

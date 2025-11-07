@@ -12,6 +12,14 @@ let benchmarks = []
 // Memoization cache for regex matches during a single analyze() run
 let __matchMemo = new Map()
 
+function __getMatchMemoSize() {
+  return __matchMemo ? __matchMemo.size : 0
+}
+
+function __clearMatchMemo() {
+  __matchMemo = new Map()
+}
+
 function __memoKey(regex, value) {
   // Using source+flags is stable per compiled pattern
   return `${regex.source}__${regex.flags}__${value}`
@@ -707,6 +715,9 @@ const Wappalyzer = {
     }, [])
   },
 }
+
+Wappalyzer.__getMatchMemoSize = __getMatchMemoSize
+Wappalyzer.__clearMatchMemo = __clearMatchMemo
 
 if (typeof module !== 'undefined') {
   module.exports = Wappalyzer

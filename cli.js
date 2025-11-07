@@ -2,6 +2,7 @@
 
 const Driver = require('./driver')
 const { parseArgs } = require('./src/cli/args')
+const { formatTechnologyList, structureDetections } = require('./src/driver/output')
 
 const { options, urls } = parseArgs(process.argv.slice(2))
 
@@ -113,23 +114,8 @@ for (const type of Object.keys(storage)) {
 ;(async function () {
   const driver = new Driver(options)
 
-  const formatList = (results) => {
-    return (results.technologies || [])
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map(t => {
-        const cats = (t.categories || []).map(c => c.name).filter(Boolean)
-        const catStr = cats.join(', ')
-        const conf = (typeof t.confidence === 'number' && !Number.isNaN(t.confidence)) ? String(t.confidence) : (t.confidence != null ? String(t.confidence) : '')
-        if (catStr && conf !== '') {
-          return `${t.name} (${catStr} / ${conf})`
-        } else if (catStr) {
-          return `${t.name} (${catStr})`
-        } else if (conf !== '') {
-          return `${t.name} (${conf})`
-        }
-        return `${t.name}`
-      })
-  }
+  // Use shared output helper for list formatting (parity with previous inline logic)
+  const formatList = (results) => formatTechnologyList(results)
 
   try {
     await driver.init()
@@ -144,7 +130,11 @@ for (const type of Object.keys(storage)) {
       }
       const results = await site.analyze()
 
-      if (!options.dump) {
+      if (options.dump) {
+        // Structured dump of detections grouped by type (compatibility with historical --dump)
+        const structured = structureDetections(site.detections || [])
+        process.stdout.write(`${JSON.stringify(structured, null, options.pretty ? 2 : null)}\n`)
+      } else {
         if (options.list) {
           const lines = formatList(results)
           process.stdout.write(`${lines.join('\n')}\n`)
@@ -165,9 +155,9 @@ for (const type of Object.keys(storage)) {
                 await new Promise((resolve) => setTimeout(resolve, deferMs))
               }
               const results = await site.analyze()
-              return { url, results }
+              return { url, results, detections: site.detections || [] }
             } catch (e) {
-              return { url, error: e.message || String(e), results: { urls: site.analyzedUrls || {}, technologies: [] } }
+              return { url, error: e.message || String(e), results: { urls: site.analyzedUrls || {}, technologies: [] }, detections: site.detections || [] }
             } finally {
               try { await site.destroy() } catch (_) {}
             }
@@ -176,7 +166,14 @@ for (const type of Object.keys(storage)) {
         out.push(...batchResults)
       }
 
-      if (!options.dump) {
+      if (options.dump) {
+        // Dump structured detections per URL
+        const dumpOut = out.map((entry) => ({
+          url: entry.url,
+          detections: structureDetections((entry.results && entry.results.detections) ? entry.results.detections : (entry.detections || [])),
+        }))
+        process.stdout.write(`${JSON.stringify(dumpOut, null, options.pretty ? 2 : null)}\n`)
+      } else {
         if (options.list) {
           const blocks = out.map(({ url, results }) => {
             const lines = formatList(results)
