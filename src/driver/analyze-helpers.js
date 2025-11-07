@@ -12,11 +12,9 @@ const { analyzeManyToMany } = require('./analyze')
 function analyzeJs(js, technologies = Wappalyzer.technologies) {
   return (js || [])
     .map(({ name, chain, value }) => {
-      return analyzeManyToMany(
-        technologies.find(({ name: _name }) => name === _name),
-        'js',
-        { [chain]: [value] }
-      )
+      const technology = technologies.find(({ name: _name }) => name === _name)
+      if (!technology) return []
+      return analyzeManyToMany(technology, 'js', { [chain]: [value] })
     })
     .flat()
 }
@@ -31,7 +29,8 @@ function analyzeJs(js, technologies = Wappalyzer.technologies) {
 function analyzeDom(dom, technologies = Wappalyzer.technologies) {
   return (dom || [])
     .map(({ name, selector, exists, text, property, attribute, value }) => {
-      const technology = technologies.find(tech => tech.name === name)
+      const technology = technologies.find(tech => tech && tech.name === name)
+      if (!technology) return []
 
       if (typeof exists !== 'undefined') {
         return analyzeManyToMany(technology, 'dom.exists', {
@@ -56,6 +55,8 @@ function analyzeDom(dom, technologies = Wappalyzer.technologies) {
           [selector]: [value],
         })
       }
+
+      return []
     })
     .flat()
 }

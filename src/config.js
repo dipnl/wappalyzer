@@ -13,15 +13,25 @@ const path = require('path')
  * @returns {Record<string, {name:string,priority?:number}>}
  */
 function loadCategories() {
-  const categories = JSON.parse(
-    fs.readFileSync(path.resolve(`${__dirname}/../categories.json`))
-  )
+  const categoriesPath = path.resolve(`${__dirname}/../categories.json`)
+  let categories
+  try {
+    categories = JSON.parse(fs.readFileSync(categoriesPath, 'utf8'))
+  } catch (error) {
+    throw new Error(`Failed to load categories.json: ${error.message}`)
+  }
 
-  if (fs.existsSync('wappalyzer-custom-categories.json')) {
-    const customJson = fs.readFileSync('wappalyzer-custom-categories.json')
-    const customCats = JSON.parse(customJson.length ? customJson : '{}')
-    for (const catId in customCats) {
-      categories[catId] = customCats[catId]
+  const customPath = 'wappalyzer-custom-categories.json'
+  if (fs.existsSync(customPath)) {
+    try {
+      const customJson = fs.readFileSync(customPath, 'utf8')
+      const customCats = JSON.parse(customJson.length ? customJson : '{}')
+      for (const catId in customCats) {
+        categories[catId] = customCats[catId]
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`Warning: Failed to load ${customPath}: ${error.message}`)
     }
   }
 
@@ -37,22 +47,30 @@ function loadTechnologies() {
 
   for (const index of Array(27).keys()) {
     const character = index ? String.fromCharCode(index + 96) : '_'
+    const techPath = path.resolve(`${__dirname}/../technologies/${character}.json`)
 
-    technologies = {
-      ...technologies,
-      ...JSON.parse(
-        fs.readFileSync(
-          path.resolve(`${__dirname}/../technologies/${character}.json`)
-        )
-      ),
+    try {
+      const content = fs.readFileSync(techPath, 'utf8')
+      technologies = {
+        ...technologies,
+        ...JSON.parse(content),
+      }
+    } catch (error) {
+      throw new Error(`Failed to load technologies/${character}.json: ${error.message}`)
     }
   }
 
-  if (fs.existsSync('wappalyzer-custom-technologies.json')) {
-    const customJson = fs.readFileSync('wappalyzer-custom-technologies.json')
-    technologies = {
-      ...technologies,
-      ...JSON.parse(customJson.length ? customJson : '{}'),
+  const customPath = 'wappalyzer-custom-technologies.json'
+  if (fs.existsSync(customPath)) {
+    try {
+      const customJson = fs.readFileSync(customPath, 'utf8')
+      technologies = {
+        ...technologies,
+        ...JSON.parse(customJson.length ? customJson : '{}'),
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(`Warning: Failed to load ${customPath}: ${error.message}`)
     }
   }
 

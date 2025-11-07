@@ -8,15 +8,14 @@ If you don't have time to configure, host, debug and maintain your own infrastru
 
 -   [Git](https://git-scm.com)
 -   [Node.js](https://nodejs.org) version 21 or higher
--   [Yarn](https://yarnpkg.com)
+-   npm or yarn
 
 ## Quick start
 
 ```sh
-git clone https://github.com/wappalyzer/wappalyzer.git
+git clone https://github.com/dipnl/wappalyzer.git
 cd wappalyzer
-yarn install
-yarn run link
+npm install
 ```
 
 ## Usage
@@ -24,9 +23,12 @@ yarn run link
 ### Command line
 
 ```sh
-node src/drivers/npm/cli.js https://example.com
+node cli.js https://example.com
 # Multiple URLs in parallel (batched by --batch-size)
-node src/drivers/npm/cli.js https://a.example.com https://b.example.com https://c.example.com -b 3
+node cli.js https://a.example.com https://b.example.com https://c.example.com -b 3
+# Or install globally and use directly
+npm install -g wappalyzer
+wappalyzer https://example.com --pretty
 ```
 
 ### Chrome extension
@@ -46,7 +48,7 @@ node src/drivers/npm/cli.js https://a.example.com https://b.example.com https://
 
 A long list of [regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_Expressions) is used to identify technologies on web pages. Wappalyzer inspects HTML code, as well as JavaScript variables, response headers and more.
 
-Patterns (regular expressions) are kept in [`src/technologies/`](https://github.com/wappalyzer/wappalyzer/blob/master/src/technologies). The following is an example of an application fingerprint.
+Patterns (regular expressions) are kept in [`technologies/`](https://github.com/dipnl/wappalyzer/tree/rewrite/technologies). The following is an example of an application fingerprint.
 
 #### Example
 
@@ -570,7 +572,7 @@ $ npm i wappalyzer
 ### Usage
 
 ```javascript
-const Wappalyzer = require('wappalyzer')
+const Driver = require('wappalyzer')
 
 const url = 'https://www.wappalyzer.com'
 
@@ -580,22 +582,21 @@ const options = {
   headers: {},
   maxDepth: 3,
   maxUrls: 10,
-  maxWait: 5000,
-  recursive: true,
-  probe: true,
+  maxWait: 30000,
+  recursive: false,
   proxy: false,
   userAgent: 'Wappalyzer',
   htmlMaxCols: 2000,
-  htmlMaxRows: 2000,
+  htmlMaxRows: 3000,
   noScripts: false,
   noRedirect: false,
-};
+}
 
-const wappalyzer = new Wappalyzer(options)
+const driver = new Driver(options)
 
 ;(async function() {
   try {
-    await wappalyzer.init()
+    await driver.init()
 
     // Optionally set additional request headers
     const headers = {}
@@ -606,10 +607,7 @@ const wappalyzer = new Wappalyzer(options)
       session: {}
     }
 
-    const site = await wappalyzer.open(url, headers, storage)
-
-    // Optionally capture and output errors
-    site.on('error', console.error)
+    const site = await driver.open(url, headers, storage)
 
     const results = await site.analyze()
 
@@ -618,29 +616,28 @@ const wappalyzer = new Wappalyzer(options)
     console.error(error)
   }
 
-  await wappalyzer.destroy()
+  await driver.destroy()
 })()
 ```
 
 Multiple URLs can be processed in parallel:
 
 ```javascript
-const Wappalyzer = require('wappalyzer');
+const Driver = require('wappalyzer')
 
 const urls = ['https://www.wappalyzer.com', 'https://www.example.com']
 
-const wappalyzer = new Wappalyzer()
+const driver = new Driver()
 
 ;(async function() {
   try {
-    await wappalyzer.init()
+    await driver.init()
 
     const results = await Promise.all(
       urls.map(async (url) => {
-        const site = await wappalyzer.open(url)
-
+        const site = await driver.open(url)
         const results = await site.analyze()
-
+        await site.destroy()
         return { url, results }
       })
     )
@@ -650,55 +647,52 @@ const wappalyzer = new Wappalyzer()
     console.error(error)
   }
 
-  await wappalyzer.destroy()
+  await driver.destroy()
 })()
 ```
 
-### Events
+## CLI Options
 
-Listen to events with `site.on(eventName, callback)`. Use the `page` parameter to access the Puppeteer page instance ([reference](https://github.com/puppeteer/puppeteer/blob/main/docs/api.md#class-page)).
+Run `wappalyzer --help` to see all available options. Key options include:
 
-| Event       | Parameters                     | Description                              |
-|-------------|--------------------------------|------------------------------------------|
-| `log`       | `message`, `source`            | Debug messages                           |
-| `error`     | `message`, `source`            | Error messages                           |
-| `request`   | `page`, `request`              | Emitted at the start of a request        |
-| `response`  | `page`, `request`              | Emitted upon receiving a server response |
-| `goto`      | `page`, `url`, `html`, `cookies`, `scriptsSrc`, `scripts`, `meta`, `js`, `language` `links` | Emitted after a page has been analysed |
-| `analyze`   | `urls`, `technologies`, `meta` | Emitted when the site has been analysed |
-
-
-
-## Additional CLI flags (this fork)
-The CLI in this fork adds a few performance and observability flags while preserving backward compatibility:
-
-- --block-assets: Block non-essential assets (images, media, fonts, stylesheets). Defaults to enabled when --fast is set unless explicitly disabled with --block-assets=0.
-- --log=level: Structured log output with levels error|warn|info|debug. Default is off; --debug still forces verbose logs.
-- --trace-timings: Print a compact JSON timing summary per analyzed URL with phases: { url, timings: { nav, idle, html, headers, js, dom, resolve, total } }.
-- --trace-save=FILE: When used with --trace-timings, also append each timing JSON line to FILE (NDJSON/one JSON per line).
-- --list: Output a simple newline-separated list of detected technologies in the form: Technology Name (Category 1, Category 2, ... / confidence).
-- --dnt: Send the Do Not Track header (DNT: 1) on all requests.
-- --ua-suffix=...: Append a custom suffix to the User-Agent (e.g. "; Wappalyzer/cli").
-- --backoff: Respect 429/503 by applying Retry-After backoff (opt-in).
-- --rate-limit-ms=...: Minimum milliseconds between requests per host (opt-in).
-- --respect-robots: Respect robots.txt (User-agent: *) for crawling/navigation.
-- --allow-domains=...: Comma-separated domain allowlist (exact or suffix). If set, only these domains plus the main host are requested.
-- --block-domains=...: Comma-separated domain blocklist (exact or suffix). These domains will be blocked.
-- --wip: Add wip.json overlay on top of bundled technologies + prod.json when loading technologies.
-- --tech-prod=PATH: Path to external prod.json (or set env WAPPALYZER_TECH_PROD).
-- --tech-wip=PATH: Path to external wip.json (or set env WAPPALYZER_TECH_WIP).
-- --category=ID[,ID...]: Restrict detection to one or more category IDs. Only technologies in these categories are probed and reported.
+- `--fast`: Prioritize speed over accuracy
+- `--no-scripts`: Disable JavaScript execution (faster, less accurate)
+- `--recursive`: Follow links on pages (crawler mode)
+- `--max-depth=N`: Limit crawl depth
+- `--max-urls=N`: Limit number of URLs to analyze
+- `--pretty`: Pretty-print JSON output
+- `--list`: Output simple list format
+- `--dump`: Dump raw detections without analysis
+- `--batch-size=N`: Process multiple URLs in batches (default: 5)
+- `--delay=ms`: Wait between requests when crawling
+- `--max-wait=ms`: Maximum wait time for page resources (default: 30000)
+- `--html-max-cols=N`: Limit HTML characters per line processed
+- `--html-max-rows=N`: Limit HTML lines processed
+- `--proxy=URL`: Use a proxy server
+- `--user-agent=STRING`: Set custom user agent
+- `--header="Key: Value"`: Add custom request headers
+- `--local-storage=JSON`: Set localStorage values
+- `--session-storage=JSON`: Set sessionStorage values
+- `--defer=ms`: Defer scan after page load
 
 Examples:
 
-```
-node cli.js https://example.com --fast --trace-timings
-node cli.js https://example.com --fast --trace-timings --trace-save=timings.ndjson
-node cli.js https://example.com --log=info
-node cli.js https://example.com --fast --block-assets=0
+```bash
+# Basic usage
+node cli.js https://example.com
+
+# Fast mode with pretty output
+node cli.js https://example.com --fast --pretty
+
+# List format output
 node cli.js https://example.com --list
-node cli.js https://example.com --dnt --ua-suffix="; Wappalyzer/cli"
-node cli.js https://example.com --respect-robots --backoff
-node cli.js https://example.com --rate-limit-ms=200 --allow-domains=example.com,cdn.example.com
-node cli.js https://example.com --block-domains=analytics.example.com,.doubleclick.net
+
+# Recursive crawl with limits
+node cli.js https://example.com --recursive --max-depth=2 --max-urls=10
+
+# Multiple URLs in parallel
+node cli.js https://a.example.com https://b.example.com --batch-size=3
+
+# With custom headers
+node cli.js https://example.com --header="Cookie: session=abc123"
 ```

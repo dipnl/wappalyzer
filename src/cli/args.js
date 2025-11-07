@@ -10,13 +10,11 @@ const aliases = {
   H: 'header',
   D: 'maxDepth',
   m: 'maxUrls',
-  p: 'probe',
   P: 'pretty',
   r: 'recursive',
   w: 'maxWait',
   n: 'noScripts',
   N: 'noRedirect',
-  e: 'extended',
 }
 
 // Flags that accept a value when provided as separate next token
@@ -27,20 +25,11 @@ const valueFlags = new Set([
   'header',
   'maxDepth',
   'maxUrls',
-  'probe',
   'maxWait',
   'proxy',
   'htmlMaxCols',
   'htmlMaxRows',
   'defer',
-  'log',
-  'rateLimitMs',
-  'allowDomains',
-  'blockDomains',
-  'uaSuffix',
-  'techProd',
-  'techWip',
-  'category',
 ])
 
 function parseArgs(argv, aliasMap = aliases) {

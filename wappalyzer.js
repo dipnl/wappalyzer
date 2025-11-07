@@ -676,7 +676,9 @@ const Wappalyzer = {
    * @param {Array} items
    */
   analyzeManyToMany(technology, types, items = {}) {
+    if (!technology || typeof technology !== 'object') return []
     const [type, ...subtypes] = types.split('.')
+    if (!technology[type] || typeof technology[type] !== 'object') return []
 
     return Object.keys(technology[type]).reduce((technologies, key) => {
       const patterns = technology[type][key] || []
