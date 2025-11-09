@@ -1,33 +1,40 @@
 'use strict'
 
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+
 const puppeteer = require('puppeteer')
 
-const { CHROMIUM_BIN, CHROMIUM_WEBSOCKET, CHROMIUM_ARGS } = process.env
+const { buildChromiumConfig } = require('../config/browser')
+
+function ensureChromiumConfig(config) {
+  if (config && typeof config === 'object') {
+    const clone = { ...config }
+    clone.args = Array.isArray(config.args) ? config.args.slice() : []
+    return clone
+  }
+
+  return buildChromiumConfig()
+}
 
 /**
- * Compute Chromium flags from environment or provide safe defaults.
- * Mirrors driver.js behavior to preserve compatibility.
- * @param {{ proxy?: string }} [options]
+ * Compute Chromium flags from environment/config or provide safe defaults.
+ * @param {{ proxy?: string, userDataDir?: string }} [options]
+ * @param {{ args?: string[] }} [chromiumConfig]
  * @returns {string[]}
  */
-function getChromiumArgs(options = {}) {
-  const base = CHROMIUM_ARGS
-    ? CHROMIUM_ARGS.split(' ')
-    : [
-        '--headless',
-        // '--single-process',
-        // '--no-sandbox',
-        // '--no-zygote',
-        '--disable-gpu',
-        // '--ignore-certificate-errors',
-        // '--allow-running-insecure-content',
-        // '--disable-web-security',
-        // `--user-data-dir=${process.env.CHROMIUM_DATA_DIR || '/tmp/chromium'}`,
-      ]
-  // Append proxy if provided via options (CLI --proxy)
+function getChromiumArgs(options = {}, chromiumConfig) {
+  const config = ensureChromiumConfig(chromiumConfig)
+  const base = Array.isArray(config.args) ? config.args.slice() : []
+
   if (options && options.proxy) {
     base.push(`--proxy-server=${options.proxy}`)
   }
+  if (options && options.userDataDir && !base.some((arg) => arg.startsWith('--user-data-dir'))) {
+    base.push(`--user-data-dir=${options.userDataDir}`)
+  }
+
   return base
 }
 
@@ -36,22 +43,38 @@ function getChromiumArgs(options = {}) {
  * @param {{ fast?: boolean, maxWait?: number, proxy?: string }} options
  * @returns {Promise<import('puppeteer').Browser>}
  */
-async function launchOrConnect(options = {}) {
-  if (CHROMIUM_WEBSOCKET) {
+async function launchOrConnect(options = {}, chromiumOverrides) {
+  const chromiumConfig = ensureChromiumConfig(chromiumOverrides)
+
+  if (chromiumConfig.websocket) {
     return puppeteer.connect({
       ignoreHTTPSErrors: true,
       acceptInsecureCerts: true,
-      browserWSEndpoint: CHROMIUM_WEBSOCKET,
+      browserWSEndpoint: chromiumConfig.websocket,
     })
   }
 
+  let userDataDir = chromiumConfig.userDataDir
+  if (userDataDir) {
+    try {
+      fs.mkdirSync(userDataDir, { recursive: true })
+    } catch (_) {
+      // ignore directory creation failures; puppeteer will attempt its fallback
+    }
+  } else {
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wappalyzer-chromium-'))
+  }
+
+  const launchArgs = getChromiumArgs({ proxy: options.proxy, userDataDir }, chromiumConfig)
+
   return puppeteer.launch({
-    headless: 'new',
+    headless: chromiumConfig.headless || 'new',
     ignoreHTTPSErrors: true,
     acceptInsecureCerts: true,
-    args: getChromiumArgs({ proxy: options.proxy }),
-    executablePath: CHROMIUM_BIN,
+    args: launchArgs,
+    executablePath: chromiumConfig.bin,
     timeout: options.fast ? Math.min(options.maxWait || 30000, 10000) : options.maxWait,
+    userDataDir,
   })
 }
 

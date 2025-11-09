@@ -32,33 +32,4 @@ function reduceLinks(links, url) {
   )
 }
 
-/**
- * Apply robots.txt and allowDomains filters to candidate links based on driver options.
- * @param {URL[]} links
- * @param {any} site - the Site instance (needs driver.options, isAllowedByRobots, isAllowedDomain)
- * @param {URL} currentUrl
- * @returns {Promise<URL[]>}
- */
-async function applyCrawlFilters(links, site, currentUrl) {
-  let out = links
-
-  if (site.driver.options.respectRobots) {
-    const filtered = []
-    for (const l of out) {
-      try {
-        if (await site.isAllowedByRobots(l)) filtered.push(l)
-      } catch {
-        filtered.push(l)
-      }
-    }
-    out = filtered
-  }
-
-  if (site.driver.options.allowDomains && site.driver.options.allowDomains.length) {
-    out = out.filter((l) => site.isAllowedDomain(l.hostname, currentUrl.hostname))
-  }
-
-  return out
-}
-
-module.exports = { reduceLinks, applyCrawlFilters }
+module.exports = { reduceLinks }

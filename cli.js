@@ -94,52 +94,95 @@ for (const type of Object.keys(storage)) {
   }
 }
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function openAndAnalyze(driver, url, headers, storageOptions, deferMs) {
+  const site = await driver.open(url, headers, storageOptions)
+
+  try {
+    if (deferMs > 0) {
+      await wait(deferMs)
+    }
+
+    const results = await site.analyze()
+
+    return {
+      url,
+      results,
+      detections: site.detections || [],
+      analyzedUrls: site.analyzedUrls || {},
+    }
+  } catch (error) {
+    error.siteData = {
+      detections: site.detections || [],
+      analyzedUrls: site.analyzedUrls || {},
+    }
+
+    throw error
+  } finally {
+    try {
+      await site.destroy()
+    } catch (_) {
+      // ignore cleanup errors
+    }
+  }
+}
+
 ;(async function () {
   const driver = new Driver(options)
 
   try {
     await driver.init()
 
-    const deferMs = parseInt(options.defer || 0, 10)
+    const deferMs = Number.parseInt(options.defer || 0, 10) || 0
 
     if (urls.length === 1) {
       const url = urls[0]
-      const site = await driver.open(url, headers, storage)
-      if (deferMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, deferMs))
-      }
-      const results = await site.analyze()
+      const { results, detections } = await openAndAnalyze(
+        driver,
+        url,
+        headers,
+        storage,
+        deferMs
+      )
 
       if (options.dump) {
         // Structured dump of detections grouped by type (compatibility with historical --dump)
-        const structured = structureDetections(site.detections || [])
+        const structured = structureDetections(detections)
         process.stdout.write(`${JSON.stringify(structured, null, options.pretty ? 2 : null)}\n`)
+      } else if (options.list) {
+        const lines = formatTechnologyList(results)
+        process.stdout.write(`${lines.join('\n')}\n`)
       } else {
-        if (options.list) {
-          const lines = formatTechnologyList(results)
-          process.stdout.write(`${lines.join('\n')}\n`)
-        } else {
-          process.stdout.write(`${JSON.stringify(results, null, options.pretty ? 2 : null)}\n`)
-        }
+        process.stdout.write(`${JSON.stringify(results, null, options.pretty ? 2 : null)}\n`)
       }
     } else {
-      const concurrency = parseInt(options.batchSize || 5, 10)
+      const concurrency = driver.options.batchSize
       const out = []
       for (let i = 0; i < urls.length; i += concurrency) {
         const batch = urls.slice(i, i + concurrency)
         const batchResults = await Promise.all(
           batch.map(async (url) => {
-            const site = await driver.open(url, headers, storage)
             try {
-              if (deferMs > 0) {
-                await new Promise((resolve) => setTimeout(resolve, deferMs))
-              }
-              const results = await site.analyze()
-              return { url, results, detections: site.detections || [] }
+              const { results, detections, analyzedUrls } = await openAndAnalyze(
+                driver,
+                url,
+                headers,
+                storage,
+                deferMs
+              )
+              return { url, results, detections, analyzedUrls }
             } catch (e) {
-              return { url, error: e.message || String(e), results: { urls: site.analyzedUrls || {}, technologies: [] }, detections: site.detections || [] }
-            } finally {
-              try { await site.destroy() } catch (_) {}
+              const fallback = e.siteData || {}
+              return {
+                url,
+                error: e.message || String(e),
+                results: {
+                  urls: fallback.analyzedUrls || {},
+                  technologies: [],
+                },
+                detections: fallback.detections || [],
+              }
             }
           })
         )
@@ -150,7 +193,7 @@ for (const type of Object.keys(storage)) {
         // Dump structured detections per URL
         const dumpOut = out.map((entry) => ({
           url: entry.url,
-          detections: structureDetections((entry.results && entry.results.detections) ? entry.results.detections : (entry.detections || [])),
+          detections: structureDetections(entry.detections || []),
         }))
         process.stdout.write(`${JSON.stringify(dumpOut, null, options.pretty ? 2 : null)}\n`)
       } else {

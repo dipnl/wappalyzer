@@ -4,10 +4,10 @@ const Wappalyzer = require('../../wappalyzer')
 const { loadConfig } = require('../config')
 const { sleep, limitHtml } = require('../utils')
 const { launchOrConnect } = require('./browser')
-const { analyze, resolve } = require('./analyze')
-const { analyzeJs, analyzeDom } = require('./analyze-helpers')
 const { collectPageData } = require('./pageData')
 const { reduceLinks } = require('./links')
+const { buildRuntimeOptions } = require('../config/options')
+const { DetectionStore } = require('./detections')
 
 const { setTechnologies, setCategories } = Wappalyzer
 
@@ -44,57 +44,12 @@ const ALL_TECHNOLOGIES = dedupeByName([
   ...DEPENDENT_TECHNOLOGIES,
 ])
 
-const DEFAULT_OPTIONS = {
-  batchSize: 5,
-  debug: false,
-  delay: 500,
-  fast: false,
-  htmlMaxCols: 2000,
-  htmlMaxRows: 3000,
-  maxDepth: 3,
-  maxUrls: 10,
-  maxWait: 30000,
-  noRedirect: false,
-  noScripts: false,
-  recursive: false,
-  userAgent:
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  headers: {},
-}
-
-function normaliseInteger(value, fallback) {
-  const parsed = parseInt(value, 10)
-  return Number.isFinite(parsed) ? parsed : fallback
-}
-
 class Driver {
   constructor(options = {}) {
-    this.options = {
-      ...DEFAULT_OPTIONS,
-      ...options,
-    }
+    const runtimeOptions = buildRuntimeOptions(options)
 
-    this.options.batchSize = normaliseInteger(this.options.batchSize, DEFAULT_OPTIONS.batchSize)
-    this.options.delay = normaliseInteger(this.options.delay, DEFAULT_OPTIONS.delay)
-    this.options.htmlMaxCols = normaliseInteger(
-      this.options.htmlMaxCols,
-      DEFAULT_OPTIONS.htmlMaxCols
-    )
-    this.options.htmlMaxRows = normaliseInteger(
-      this.options.htmlMaxRows,
-      DEFAULT_OPTIONS.htmlMaxRows
-    )
-    this.options.maxDepth = normaliseInteger(this.options.maxDepth, DEFAULT_OPTIONS.maxDepth)
-    this.options.maxUrls = normaliseInteger(this.options.maxUrls, DEFAULT_OPTIONS.maxUrls)
-    this.options.maxWait = normaliseInteger(this.options.maxWait, DEFAULT_OPTIONS.maxWait)
-
-    this.options.fast = Boolean(+this.options.fast || this.options.fast)
-    this.options.debug = Boolean(+this.options.debug || this.options.debug)
-    this.options.noScripts = Boolean(+this.options.noScripts || this.options.noScripts)
-    this.options.recursive = Boolean(+this.options.recursive || this.options.recursive)
-    this.options.noRedirect = Boolean(+this.options.noRedirect || this.options.noRedirect)
-
-    this.options.headers = this.options.headers || {}
+    this.options = runtimeOptions.driver
+    this.chromium = runtimeOptions.chromium
 
     this.browser = null
     this.destroyed = false
@@ -111,7 +66,7 @@ class Driver {
       fast: this.options.fast,
       maxWait: this.options.maxWait,
       proxy: this.options.proxy,
-    })
+    }, this.chromium)
   }
 
   async destroy() {
@@ -144,12 +99,14 @@ class Site {
 
     this.analyzedUrls = {}
     this.cookieNameSet = new Set()
-    this.detections = []
+    this.detectionStore = new DetectionStore()
+    Object.defineProperty(this, 'detections', {
+      enumerable: false,
+      get: () => this.detectionStore.items,
+    })
 
     this.context = null
     this.pages = new Set()
-
-    this.requireChecks = new Set()
   }
 
   async prepareStorage() {
@@ -300,24 +257,32 @@ class Site {
     )
     timings.capture = Date.now() - dataStart
 
-    const detections = this._runAnalysis(
-      {
-        url,
-        html,
-        cookies,
-        cookieNames,
-        ...pageData,
-      },
-      this.driver.baseTechnologies
-    )
-
-    this._addDetections(url, detections)
-
-    this._runDependentAnalyses(url, pageData, {
+    const analysisInput = {
+      url,
       html,
       cookies,
       cookieNames,
-    })
+      ...pageData,
+    }
+
+    const detections = this.detectionStore.runAnalysis(
+      analysisInput,
+      this.driver.baseTechnologies
+    )
+
+    this.detectionStore.addDetections(url, detections)
+
+    this.detectionStore.runDependentAnalyses(
+      url,
+      pageData,
+      {
+        html,
+        cookies,
+        cookieNames,
+      },
+      this.driver.dependentByTechnology,
+      this.driver.dependentByCategory
+    )
 
     await page.close().catch(() => {})
     this.pages.delete(page)
@@ -327,93 +292,6 @@ class Site {
 
     const links = reduceLinks(pageData.links || [], url)
     return links
-  }
-
-  _runAnalysis(data, technologies) {
-    const { url, html, cookies, cookieNames, text, css, scripts, scriptSrc, meta, js, dom } = data
-
-    const results = []
-
-    if (dom && dom.length) {
-      results.push(...analyzeDom(dom, technologies))
-    }
-    if (js && js.length) {
-      results.push(...analyzeJs(js, technologies))
-    }
-    results.push(
-      ...analyze(
-        {
-          url,
-          html,
-          cookies,
-          cookieNames,
-          text,
-          css,
-          scripts,
-          scriptSrc,
-          meta,
-        },
-        technologies
-      )
-    )
-
-    return results
-  }
-
-  _runDependentAnalyses(url, pageData, baseSignals) {
-    const data = {
-      url,
-      ...baseSignals,
-      ...pageData,
-    }
-
-    let updated = false
-    do {
-      updated = false
-      const resolved = resolve(this.detections)
-      const detectedNames = new Set(resolved.map(({ name }) => name))
-      const detectedCategoryIds = new Set(
-        resolved.flatMap((entry) => (entry.categories || []).map((cat) => cat.id))
-      )
-
-      for (const entry of this.driver.dependentByTechnology) {
-        if (!detectedNames.has(entry.name)) continue
-        if (this.requireChecks.has(`tech:${entry.name}`)) continue
-        this.requireChecks.add(`tech:${entry.name}`)
-        const detections = this._runAnalysis(data, entry.technologies || [])
-        const added = this._addDetections(url, detections)
-        if (added) updated = true
-      }
-
-      for (const entry of this.driver.dependentByCategory) {
-        if (!detectedCategoryIds.has(entry.categoryId)) continue
-        const key = `cat:${entry.categoryId}`
-        if (this.requireChecks.has(key)) continue
-        this.requireChecks.add(key)
-        const detections = this._runAnalysis(data, entry.technologies || [])
-        const added = this._addDetections(url, detections)
-        if (added) updated = true
-      }
-    } while (updated)
-  }
-
-  _addDetections(url, detections) {
-    const existing = new Map(
-      this.detections.map((det) => [Site._detectionKey(det), det])
-    )
-
-    let added = false
-    for (const detection of detections) {
-      if (!detection || !detection.technology) continue
-      const key = Site._detectionKey(detection)
-      if (existing.has(key)) continue
-      detection.lastUrl = url.href
-      detection.rootPath = url.pathname === '/'
-      this.detections.push(detection)
-      existing.set(key, detection)
-      added = true
-    }
-    return added
   }
 
   async _createPage() {
@@ -459,28 +337,7 @@ class Site {
   }
 
   _buildResult() {
-    const resolved = resolve(this.detections)
-
-    const technologies = resolved.map(
-      ({ name, slug, description, confidence, version, icon, website, cpe, categories, rootPath }) => ({
-        name,
-        slug,
-        description,
-        confidence,
-        version: version || null,
-        icon,
-        website,
-        cpe,
-        categories: (categories || []).map(({ id, slug, name }) => ({ id, slug, name })),
-        rootPath,
-      })
-    )
-
-    return {
-      urls: this.analyzedUrls,
-      technologies,
-      cookieNames: Array.from(this.cookieNameSet),
-    }
+    return this.detectionStore.buildResult(this.analyzedUrls, this.cookieNameSet)
   }
 
   async destroy() {
@@ -492,12 +349,6 @@ class Site {
       await this.context.close().catch(() => {})
       this.context = null
     }
-  }
-
-  static _detectionKey(detection) {
-    const tech = detection.technology || {}
-    const pattern = detection.pattern || {}
-    return [tech.name || '', pattern.type || '', pattern.regex ? pattern.regex.toString() : '', pattern.version || ''].join('#')
   }
 }
 

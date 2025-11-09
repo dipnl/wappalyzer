@@ -1,381 +1,554 @@
 'use strict'
 
+const benchmarkEnvEnabled =
+  typeof process !== 'undefined' ? Boolean(process.env.WAPPALYZER_BENCHMARK) : false
+
+class MatchMemo {
+  constructor() {
+    this.clear()
+  }
+
+  _getKey(regex, value) {
+    return `${regex.source}__${regex.flags}__${value}`
+  }
+
+  exec(regex, value) {
+    const key = this._getKey(regex, value)
+    if (this.cache.has(key)) {
+      return this.cache.get(key)
+    }
+
+    const result = regex.exec(value)
+    this.cache.set(key, result)
+    return result
+  }
+
+  clear() {
+    this.cache = new Map()
+  }
+
+  size() {
+    return this.cache.size
+  }
+}
+
+class BenchmarkRecorder {
+  constructor(enabled = benchmarkEnvEnabled) {
+    this.enabled = enabled
+    this.reset()
+  }
+
+  record(duration, pattern, value = '', technology) {
+    if (!this.enabled) return
+
+    this.entries.push({
+      duration,
+      pattern: String(pattern.regex),
+      value: String(value).slice(0, 100),
+      valueLength: value.length,
+      technology: technology.name,
+    })
+  }
+
+  reset() {
+    this.entries = []
+  }
+
+  summarize() {
+    if (!this.enabled || !this.entries.length) {
+      return null
+    }
+
+    const totalPatterns = this.entries.length
+    const totalDuration = this.entries.reduce((sum, { duration }) => sum + duration, 0)
+
+    const slowestByTechnology = Object.values(
+      this.entries.reduce((accumulator, { duration, technology }) => {
+        if (!accumulator[technology]) {
+          accumulator[technology] = { technology, duration: 0 }
+        }
+        accumulator[technology].duration += duration
+        return accumulator
+      }, {})
+    )
+      .sort((a, b) => (a.duration > b.duration ? -1 : 1))
+      .filter(({ duration }) => duration)
+      .slice(0, 5)
+      .reduce((technologies, { technology, duration }) => {
+        technologies[technology] = duration
+        return technologies
+      }, {})
+
+    const slowestPatterns = this.entries
+      .slice()
+      .sort((a, b) => (a.duration > b.duration ? -1 : 1))
+      .filter(({ duration }) => duration)
+      .slice(0, 5)
+
+    return {
+      totalPatterns,
+      totalDuration,
+      averageDuration: Math.round(totalDuration / totalPatterns),
+      slowestTechnologies: slowestByTechnology,
+      slowestPatterns,
+    }
+  }
+
+  logSummary() {
+    const summary = this.summarize()
+    if (!summary) return
+
+    // eslint-disable-next-line no-console
+    console.log(summary)
+  }
+}
+
 function toArray(value) {
   return Array.isArray(value) ? value : [value]
 }
 
-const benchmarkEnabled =
-  typeof process !== 'undefined' ? !!process.env.WAPPALYZER_BENCHMARK : false
-
-let benchmarks = []
-
-// Memoization cache for regex matches during a single analyze() run
-let __matchMemo = new Map()
-
-function __getMatchMemoSize() {
-  return __matchMemo ? __matchMemo.size : 0
+function slugify(string) {
+  return string
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/--+/g, '-')
+    .replace(/(?:^-|-$)/g, '')
 }
 
-function __clearMatchMemo() {
-  __matchMemo = new Map()
-}
-
-function __memoKey(regex, value) {
-  // Using source+flags is stable per compiled pattern
-  return `${regex.source}__${regex.flags}__${value}`
-}
-
-function __execMemo(regex, value) {
-  const key = __memoKey(regex, value)
-  if (__matchMemo.has(key)) {
-    return __matchMemo.get(key)
-  }
-  const res = regex.exec(value)
-  __matchMemo.set(key, res)
-  return res
-}
-
-function benchmark(duration, pattern, value = '', technology) {
-  if (!benchmarkEnabled) {
-    return
+function parsePattern(pattern, isRegex = true) {
+  if (pattern && typeof pattern === 'object' && !Array.isArray(pattern)) {
+    return Object.keys(pattern).reduce((parsed, key) => {
+      parsed[key] = parsePattern(pattern[key], isRegex)
+      return parsed
+    }, {})
   }
 
-  benchmarks.push({
-    duration,
-    pattern: String(pattern.regex),
-    value: String(value).slice(0, 100),
-    valueLength: value.length,
-    technology: technology.name,
-  })
+  const rawPattern = pattern != null ? pattern.toString() : ''
+  const [firstSegment, ...segments] = rawPattern.split('\\;')
+
+  const attributes = segments.reduce((attrs, segment) => {
+    const [key, ...rest] = segment.split(':')
+    if (key) {
+      attrs[key] = rest.join(':')
+    }
+    return attrs
+  }, {})
+
+  const regexSource = isRegex
+    ? firstSegment
+        .replace(/\//g, '\\/')
+        .replace(/\\\+/g, '__escapedPlus__')
+        .replace(/\+/g, '{1,250}')
+        .replace(/\*/g, '{0,250}')
+        .replace(/__escapedPlus__/g, '\\+')
+    : firstSegment
+
+  return {
+    value: typeof pattern === 'number' ? pattern : firstSegment,
+    regex: new RegExp(regexSource, 'i'),
+    confidence: Number.parseInt(attributes.confidence || 100, 10),
+    version: attributes.version || '',
+  }
 }
 
-function benchmarkSummary() {
-  if (!benchmarkEnabled) {
-    return
+function transformPatterns(patterns, caseSensitive = false, isRegex = true) {
+  if (!patterns) {
+    return []
   }
 
-  const totalPatterns = Object.values(benchmarks).length
-  const totalDuration = Object.values(benchmarks).reduce(
-    (sum, { duration }) => sum + duration,
-    0
-  )
+  const normalized =
+    typeof patterns === 'string' || typeof patterns === 'number' || Array.isArray(patterns)
+      ? { main: patterns }
+      : patterns
 
-  // eslint-disable-next-line no-console
-  console.log({
-    totalPatterns,
-    totalDuration,
-    averageDuration: Math.round(totalDuration / totalPatterns),
-    slowestTechnologies: Object.values(
-      benchmarks.reduce((benchmarks, { duration, technology }) => {
-        if (benchmarks[technology]) {
-          benchmarks[technology].duration += duration
-        } else {
-          benchmarks[technology] = { technology, duration }
-        }
+  const parsed = Object.keys(normalized).reduce((accumulator, key) => {
+    const targetKey = caseSensitive ? key : key.toLowerCase()
+    accumulator[targetKey] = toArray(normalized[key]).map((pattern) => parsePattern(pattern, isRegex))
+    return accumulator
+  }, {})
 
-        return benchmarks
-      }, {})
+  return Object.prototype.hasOwnProperty.call(parsed, 'main') ? parsed.main : parsed
+}
+
+function normalizeDomRules(dom) {
+  if (typeof dom === 'string' || Array.isArray(dom)) {
+    return toArray(dom).reduce((accumulator, selector) => {
+      return {
+        ...accumulator,
+        [selector]: { exists: '' },
+      }
+    }, {})
+  }
+
+  return dom
+}
+
+function runPattern({
+  pattern,
+  type,
+  value,
+  technology,
+  origKey,
+  execMatch,
+  resolveVersion,
+  benchmark,
+}) {
+  const startedAt = Date.now()
+  const matches = execMatch(pattern.regex, value)
+
+  if (!matches) {
+    benchmark(Date.now() - startedAt, pattern, value, technology)
+    return null
+  }
+
+  const detection = {
+    technology,
+    pattern: {
+      ...pattern,
+      type,
+      value,
+      match: matches[0],
+      ...(origKey ? { origKey } : {}),
+    },
+    version: resolveVersion(pattern, value),
+  }
+
+  benchmark(Date.now() - startedAt, pattern, value, technology)
+
+  return detection
+}
+
+function analyzeOneToOne(technology, type, value, helpers) {
+  const patterns = technology[type] || []
+
+  return patterns
+    .map((pattern) =>
+      runPattern({
+        pattern,
+        type,
+        value,
+        technology,
+        execMatch: helpers.execMatch,
+        resolveVersion: helpers.resolveVersion,
+        benchmark: helpers.benchmark,
+      })
     )
-      .sort(({ duration: a }, { duration: b }) => (a > b ? -1 : 1))
-      .filter(({ duration }) => duration)
-      .slice(0, 5)
-      .reduce(
-        (technologies, { technology, duration }) => ({
-          ...technologies,
-          [technology]: duration,
-        }),
-        {}
-      ),
-    slowestPatterns: Object.values(benchmarks)
-      .sort(({ duration: a }, { duration: b }) => (a > b ? -1 : 1))
-      .filter(({ duration }) => duration)
-      .slice(0, 5),
-  })
+    .filter(Boolean)
 }
 
-const Wappalyzer = {
-  technologies: [],
-  categories: [],
-  requires: [],
-  categoryRequires: [],
+function analyzeOneToMany(technology, type, items = [], helpers) {
+  const patterns = technology[type] || []
 
-  slugify: (string) =>
-    string
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/--+/g, '-')
-      .replace(/(?:^-|-$)/g, ''),
+  return items
+    .map((value) =>
+      patterns
+        .map((pattern) =>
+          runPattern({
+            pattern,
+            type,
+            value,
+            technology,
+            execMatch: helpers.execMatch,
+            resolveVersion: helpers.resolveVersion,
+            benchmark: helpers.benchmark,
+          })
+        )
+        .filter(Boolean)
+    )
+    .flat()
+}
 
-  getTechnology: (name) =>
-    [
-      ...Wappalyzer.technologies,
-      ...Wappalyzer.requires.map(({ technologies }) => technologies).flat(),
-      ...Wappalyzer.categoryRequires
-        .map(({ technologies }) => technologies)
-        .flat(),
-    ].find(({ name: _name }) => name === _name),
+function analyzeManyToMany(technology, types, items = {}, helpers) {
+  if (!technology || typeof technology !== 'object') {
+    return []
+  }
 
-  getCategory: (id) => Wappalyzer.categories.find(({ id: _id }) => id === _id),
+  const [type, ...subtypes] = types.split('.')
+  if (!technology[type] || typeof technology[type] !== 'object') {
+    return []
+  }
 
-  /**
-   * Resolve promises for implied technology.
-   * @param {Array} detections
-   */
-  resolve(detections = []) {
-    const resolved = detections.reduce((resolved, { technology, lastUrl }) => {
+  return Object.keys(technology[type])
+    .map((key) => {
+      const patterns = technology[type][key] || []
+      const values = items[key] || []
+
+      return patterns
+        .map((originalPattern) => {
+          const pattern = subtypes.reduce(
+            (current, subtype) => (current && current[subtype]) || {},
+            originalPattern
+          )
+
+          return values
+            .map((value) =>
+              runPattern({
+                pattern,
+                type,
+                value,
+                technology,
+                origKey: key,
+                execMatch: helpers.execMatch,
+                resolveVersion: helpers.resolveVersion,
+                benchmark: helpers.benchmark,
+              })
+            )
+            .filter(Boolean)
+        })
+        .flat()
+    })
+    .flat()
+}
+
+function aggregateDetections(detections) {
+  const byTechnology = new Map()
+
+  detections.forEach((detection) => {
+    if (!detection || !detection.technology) {
+      return
+    }
+
+    const name = detection.technology.name
+    if (!byTechnology.has(name)) {
+      byTechnology.set(name, [])
+    }
+    byTechnology.get(name).push(detection)
+  })
+
+  return Array.from(byTechnology.values()).map((entries) => {
+    const [first] = entries
+    let confidence = 0
+    let version = ''
+    let rootPath
+    let lastUrl
+
+    entries.forEach(({ pattern, version: detectedVersion, rootPath: detectionRootPath, lastUrl: detectionLastUrl }) => {
+      confidence = Math.min(100, confidence + pattern.confidence)
+
       if (
-        resolved.findIndex(
-          ({ technology: { name } }) => name === technology?.name
-        ) === -1
+        detectedVersion &&
+        detectedVersion.length > version.length &&
+        detectedVersion.length <= 15 &&
+        (parseInt(detectedVersion, 10) || 0) < 10000
       ) {
-        let version = ''
-        let confidence = 0
-        let rootPath
-
-        detections
-          .filter(
-            ({ technology: _technology }) =>
-              _technology && _technology.name === technology.name
-          )
-          .forEach(
-            ({
-              technology: { name },
-              pattern,
-              version: _version = '',
-              rootPath: _rootPath,
-            }) => {
-              confidence = Math.min(100, confidence + pattern.confidence)
-              version =
-                _version.length > version.length &&
-                _version.length <= 15 &&
-                (parseInt(_version, 10) || 0) < 10000 // Ignore long numeric strings like timestamps
-                  ? _version
-                  : version
-              rootPath = rootPath || _rootPath || undefined
-            }
-          )
-
-        resolved.push({ technology, confidence, version, rootPath, lastUrl })
+        version = detectedVersion
       }
 
-      return resolved
-    }, [])
+      if (!rootPath && detectionRootPath !== undefined) {
+        rootPath = detectionRootPath || undefined
+      }
 
-    Wappalyzer.resolveExcludes(resolved)
-    Wappalyzer.resolveImplies(resolved)
+      if (detectionLastUrl) {
+        lastUrl = detectionLastUrl
+      }
+    })
 
-    const priority = ({ technology: { categories } }) =>
-      categories.reduce(
-        (max, id) => Math.max(max, Wappalyzer.getCategory(id).priority),
-        0
-      )
+    return {
+      technology: first.technology,
+      confidence,
+      version,
+      rootPath,
+      lastUrl,
+    }
+  })
+}
 
-    return resolved
-      .sort((a, b) => (priority(a) > priority(b) ? 1 : -1))
-      .map(
-        ({
-          technology: {
-            name,
-            description,
-            slug,
-            categories,
-            icon,
-            website,
-            pricing,
-            cpe,
-          },
-          confidence,
-          version,
-          rootPath,
-          lastUrl,
-        }) => ({
-          name,
-          description,
-          slug,
-          categories: categories.map((id) => Wappalyzer.getCategory(id)),
-          confidence,
-          version,
-          icon,
-          website,
-          pricing,
-          cpe,
-          rootPath,
+function resolveExcludes(resolved, getTechnology) {
+  resolved.forEach(({ technology }) => {
+    technology.excludes.forEach(({ name }) => {
+      const excluded = getTechnology(name)
+      if (!excluded) {
+        throw new Error(`Excluded technology does not exist: ${name}`)
+      }
+
+      for (let index = resolved.length - 1; index >= 0; index -= 1) {
+        if (resolved[index].technology.name === excluded.name) {
+          resolved.splice(index, 1)
+        }
+      }
+    })
+  })
+}
+
+function resolveImplies(resolved, getTechnology) {
+  let updated
+
+  do {
+    updated = false
+
+    resolved.forEach(({ technology, confidence, lastUrl }) => {
+      technology.implies.forEach(({ name, confidence: impliedConfidence, version }) => {
+        const implied = getTechnology(name)
+        if (!implied) {
+          throw new Error(`Implied technology does not exist: ${name}`)
+        }
+
+        const contribution = Math.round((confidence * impliedConfidence) / 100)
+
+        const existing = resolved.find(({ technology: current }) => current.name === implied.name)
+        if (existing) {
+          const previous = existing.confidence
+          existing.confidence = Math.max(existing.confidence, contribution)
+          if (existing.confidence !== previous) {
+            updated = true
+          }
+          return
+        }
+
+        resolved.push({
+          technology: implied,
+          confidence: contribution,
+          version: version || '',
           lastUrl,
         })
-      )
-  },
+        updated = true
+      })
+    })
+  } while (resolved.length && updated)
+}
 
-  /**
-   * Resolve promises for version of technology.
-   * @param {Promise} resolved
-   * @param match
-   */
+function mapResolvedOutput(resolved, getCategory) {
+  const priority = ({ technology: { categories } }) =>
+    categories.reduce((max, id) => Math.max(max, getCategory(id).priority), 0)
+
+  return resolved
+    .sort((a, b) => (priority(a) > priority(b) ? 1 : -1))
+    .map(
+      ({
+        technology: { name, description, slug, categories, icon, website, pricing, cpe },
+        confidence,
+        version,
+        rootPath,
+        lastUrl,
+      }) => ({
+        name,
+        description,
+        slug,
+        categories: categories.map((id) => getCategory(id)),
+        confidence,
+        version,
+        icon,
+        website,
+        pricing,
+        cpe,
+        rootPath,
+        lastUrl,
+      })
+    )
+}
+
+class WappalyzerCore {
+  constructor({ benchmarkEnabled = benchmarkEnvEnabled } = {}) {
+    this.matchMemo = new MatchMemo()
+    this.benchmarks = new BenchmarkRecorder(benchmarkEnabled)
+
+    this.technologies = []
+    this.categories = []
+    this.requires = []
+    this.categoryRequires = []
+    this._technologyByName = new Map()
+  }
+
+  slugify(string) {
+    return slugify(string)
+  }
+
+  getTechnology(name) {
+    return this._technologyByName.get(name)
+  }
+
+  getCategory(id) {
+    return this.categories.find((category) => category.id === id)
+  }
+
+  resolve(detections = []) {
+    const aggregated = aggregateDetections(detections)
+
+    resolveExcludes(aggregated, (name) => this.getTechnology(name))
+    resolveImplies(aggregated, (name) => this.getTechnology(name))
+
+    return mapResolvedOutput(aggregated, (id) => this.getCategory(id))
+  }
+
   resolveVersion({ version, regex }, match) {
     let resolved = version
 
-    if (version) {
-      const matches = regex.exec(match)
-
-      if (matches) {
-        matches.forEach((match, index) => {
-          if (String(match).length > 10) {
-            return
-          }
-
-          // Parse ternary operator
-          const ternary = new RegExp(`\\\\${index}\\?([^:]+):(.*)$`).exec(
-            version
-          )
-
-          if (ternary && ternary.length === 3) {
-            resolved = version.replace(
-              ternary[0],
-              match ? ternary[1] : ternary[2]
-            )
-          }
-
-          // Replace back references
-          resolved = resolved
-            .trim()
-            .replace(new RegExp(`\\\\${index}`, 'g'), match || '')
-        })
-
-        // Remove unmatched back references
-        resolved = resolved.replace(/\\\d/, '')
-      }
+    if (!version) {
+      return resolved
     }
 
-    return resolved
-  },
+    const matches = regex.exec(match)
+    if (!matches) {
+      return resolved
+    }
 
-  /**
-   * Resolve promises for excluded technology.
-   * @param {Promise} resolved
-   */
-  resolveExcludes(resolved) {
-    resolved.forEach(({ technology }) => {
-      technology.excludes.forEach(({ name }) => {
-        const excluded = Wappalyzer.getTechnology(name)
+    matches.forEach((matched, index) => {
+      if (String(matched).length > 10) {
+        return
+      }
 
-        if (!excluded) {
-          throw new Error(`Excluded technology does not exist: ${name}`)
-        }
+      const ternary = new RegExp(`\\\\${index}\\?([^:]+):(.*)$`).exec(version)
+      if (ternary && ternary.length === 3) {
+        resolved = version.replace(ternary[0], matched ? ternary[1] : ternary[2])
+      }
 
-        let index
-
-        do {
-          index = resolved.findIndex(
-            ({ technology: { name } }) => name === excluded.name
-          )
-
-          if (index !== -1) {
-            resolved.splice(index, 1)
-          }
-        } while (index !== -1)
-      })
+      resolved = resolved.trim().replace(new RegExp(`\\\\${index}`, 'g'), matched || '')
     })
-  },
 
-  /**
-   * Resolve promises for implied technology.
-   * @param {Promise} resolved
-   */
-  resolveImplies(resolved) {
-    let done = false
+    return resolved.replace(/\\\d/, '')
+  }
 
-    do {
-      done = true
+  analyze(items, technologies = this.technologies) {
+    this.benchmarks.reset()
+    this.matchMemo.clear()
 
-      resolved.forEach(({ technology, confidence, lastUrl }) => {
-        technology.implies.forEach(
-          ({ name, confidence: _confidence, version }) => {
-            const implied = Wappalyzer.getTechnology(name)
-
-            if (!implied) {
-              throw new Error(`Implied technology does not exist: ${name}`)
-            }
-
-            const existingIndex = resolved.findIndex(({technology}) => technology.name === implied.name);
-            if (existingIndex === -1) {
-              resolved.push({
-                technology: implied,
-                confidence: Math.round(confidence * _confidence / 100),
-                version: version || '',
-                lastUrl,
-              })
-              done = false
-            }
-            else {
-              resolved[existingIndex].confidence = Math.max(
-                resolved[existingIndex].confidence,
-                Math.round(confidence * _confidence / 100)
-              );
-            }
-          }
-        )
-      })
-    } while (resolved.length && !done)
-  },
-
-  /**
-   * Initialize analyzation.
-   * @param {*} param0
-   */
-  analyze(items, technologies = Wappalyzer.technologies) {
-    benchmarks = []
-    __matchMemo = new Map()
-
-    const oo = Wappalyzer.analyzeOneToOne
-    const om = Wappalyzer.analyzeOneToMany
-    const mm = Wappalyzer.analyzeManyToMany
+    const helpers = {
+      execMatch: (regex, value) => this.matchMemo.exec(regex, value),
+      resolveVersion: (pattern, value) => this.resolveVersion(pattern, value),
+      benchmark: (duration, pattern, value, technology) =>
+        this.benchmarks.record(duration, pattern, value, technology),
+    }
 
     const relations = {
-      certIssuer: oo,
-      cookies: mm,
-      cookieNames: om,
-      css: oo,
-      dns: mm,
-      headers: mm,
-      html: oo,
-      meta: mm,
-      probe: mm,
-      robots: oo,
-      scriptSrc: om,
-      scripts: oo,
-      text: oo,
-      url: oo,
-      xhr: oo,
+      certIssuer: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
+      cookies: (technology, type, value) => analyzeManyToMany(technology, type, value, helpers),
+      cookieNames: (technology, type, value) => analyzeOneToMany(technology, type, value, helpers),
+      css: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
+      dns: (technology, type, value) => analyzeManyToMany(technology, type, value, helpers),
+      headers: (technology, type, value) => analyzeManyToMany(technology, type, value, helpers),
+      html: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
+      meta: (technology, type, value) => analyzeManyToMany(technology, type, value, helpers),
+      probe: (technology, type, value) => analyzeManyToMany(technology, type, value, helpers),
+      robots: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
+      scriptSrc: (technology, type, value) => analyzeOneToMany(technology, type, value, helpers),
+      scripts: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
+      text: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
+      url: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
+      xhr: (technology, type, value) => analyzeOneToOne(technology, type, value, helpers),
     }
 
     try {
       const detections = technologies
         .map((technology) =>
           Object.keys(relations)
-            .map(
-              (type) =>
-                items[type] && relations[type](technology, type, items[type])
-            )
+            .map((type) => (items[type] ? relations[type](technology, type, items[type]) : []))
             .flat()
         )
         .flat()
-        .filter((technology) => technology)
+        .filter(Boolean)
 
-      benchmarkSummary()
+      this.benchmarks.logSummary()
 
       return detections
     } catch (error) {
       throw new Error(error.message || error.toString())
     }
-  },
+  }
 
-  /**
-   * Extract technologies from data collected.
-   * @param {object} data
-   */
   setTechnologies(data) {
-    const transform = Wappalyzer.transformPatterns
+    const technologyList = Object.keys(data).map((name) => {
+      const definition = data[name]
 
-    Wappalyzer.technologies = Object.keys(data).reduce((technologies, name) => {
       const {
         cats,
         certIssuer,
@@ -404,323 +577,221 @@ const Wappalyzer = {
         url,
         website,
         xhr,
-      } = data[name]
+      } = definition
 
-      technologies.push({
-        categories: (cats || []).map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)),
-        certIssuer: transform(certIssuer),
-        cookies: transform(cookies),
-        cookieNames: transform(cookieNames),
+      return {
+        name,
+        slug: this.slugify(name),
+        categories: (cats || []).map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id)),
+        certIssuer: transformPatterns(certIssuer),
+        cookies: transformPatterns(cookies),
+        cookieNames: transformPatterns(cookieNames),
         cpe: cpe || null,
-        css: transform(css),
+        css: transformPatterns(css),
         description: description || null,
-        dns: transform(dns),
-        dom: transform(
-          typeof dom === 'string' || Array.isArray(dom)
-            ? toArray(dom).reduce(
-                (dom, selector) => ({ ...dom, [selector]: { exists: '' } }),
-                {}
-              )
-            : dom,
-          true,
-          false
-        ),
-        excludes: transform(excludes).map(({ value }) => ({ name: value })),
-        headers: transform(headers),
-        html: transform(html),
+        dns: transformPatterns(dns),
+        dom: transformPatterns(normalizeDomRules(dom), true, false),
+        excludes: transformPatterns(excludes).map(({ value }) => ({ name: value })),
+        headers: transformPatterns(headers),
+        html: transformPatterns(html),
         icon: icon || 'default.svg',
-        implies: transform(implies).map(({ value, confidence, version }) => ({
+        implies: transformPatterns(implies).map(({ value, confidence, version }) => ({
           name: value,
           confidence,
           version,
         })),
-        js: transform(js, true),
-        meta: transform(meta),
-        name,
+        js: transformPatterns(js, true),
+        meta: transformPatterns(meta),
         pricing: pricing || [],
-        probe: transform(probe, true),
-        requires: transform(requires).map(({ value }) => ({ name: value })),
-        requiresCategory: transform(requiresCategory).map(({ value }) => ({
+        probe: transformPatterns(probe, true),
+        requires: transformPatterns(requires).map(({ value }) => ({ name: value })),
+        requiresCategory: transformPatterns(requiresCategory).map(({ value }) => ({
           id: value,
         })),
-        robots: transform(robots),
-        scriptSrc: transform(scriptSrc),
-        scripts: transform(scripts),
-        slug: Wappalyzer.slugify(name),
-        text: transform(text),
-        url: transform(url),
+        robots: transformPatterns(robots),
+        scriptSrc: transformPatterns(scriptSrc),
+        scripts: transformPatterns(scripts),
+        text: transformPatterns(text),
+        url: transformPatterns(url),
         website: website || null,
-        xhr: transform(xhr),
-      })
+        xhr: transformPatterns(xhr),
+      }
+    })
 
-      return technologies
-    }, [])
+    const technologyByName = new Map(technologyList.map((technology) => [technology.name, technology]))
 
-    Wappalyzer.technologies
+    const requiresMap = {}
+    const categoryRequiresMap = {}
+
+    technologyList
       .filter(({ requires }) => requires.length)
-      .forEach((technology) =>
+      .forEach((technology) => {
         technology.requires.forEach(({ name }) => {
-          if (!Wappalyzer.getTechnology(name)) {
+          if (!technologyByName.has(name)) {
             throw new Error(`Required technology does not exist: ${name}`)
           }
 
-          Wappalyzer.requires[name] = Wappalyzer.requires[name] || []
-
-          Wappalyzer.requires[name].push(technology)
+          requiresMap[name] = requiresMap[name] || []
+          requiresMap[name].push(technology)
         })
-      )
+      })
 
-    Wappalyzer.requires = Object.keys(Wappalyzer.requires).map((name) => ({
+    technologyList
+      .filter(({ requiresCategory }) => requiresCategory.length)
+      .forEach((technology) => {
+        technology.requiresCategory.forEach(({ id }) => {
+          categoryRequiresMap[id] = categoryRequiresMap[id] || []
+          categoryRequiresMap[id].push(technology)
+        })
+      })
+
+    this.requires = Object.keys(requiresMap).map((name) => ({
       name,
-      technologies: Wappalyzer.requires[name],
+      technologies: requiresMap[name],
     }))
 
-    Wappalyzer.technologies
-      .filter(({ requiresCategory }) => requiresCategory.length)
-      .forEach((technology) =>
-        technology.requiresCategory.forEach(({ id }) => {
-          Wappalyzer.categoryRequires[id] =
-            Wappalyzer.categoryRequires[id] || []
+    this.categoryRequires = Object.keys(categoryRequiresMap).map((id) => ({
+      categoryId: parseInt(id, 10),
+      technologies: categoryRequiresMap[id],
+    }))
 
-          Wappalyzer.categoryRequires[id].push(technology)
-        })
-      )
-
-    Wappalyzer.categoryRequires = Object.keys(Wappalyzer.categoryRequires).map(
-      (id) => ({
-        categoryId: parseInt(id, 10),
-        technologies: Wappalyzer.categoryRequires[id],
-      })
+    this.technologies = technologyList.filter(
+      ({ requires, requiresCategory }) => !requires.length && !requiresCategory.length
     )
 
-    Wappalyzer.technologies = Wappalyzer.technologies.filter(
-      ({ requires, requiresCategory }) =>
-        !requires.length && !requiresCategory.length
-    )
-  },
+    this._technologyByName = technologyByName
+  }
 
-  /**
-   * Assign categoryMap for data.
-   * @param {Object} data
-   */
   setCategories(data) {
-    Wappalyzer.categories = Object.keys(data)
-      .reduce((categories, id) => {
+    this.categories = Object.keys(data)
+      .map((id) => {
         const category = data[id]
-
-        categories.push({
+        return {
           id: parseInt(id, 10),
-          slug: Wappalyzer.slugify(category.name),
+          slug: this.slugify(category.name),
           ...category,
-        })
-
-        return categories
-      }, [])
-      .sort(({ priority: a }, { priority: b }) => (a > b ? -1 : 0))
-  },
-
-  /**
-   * Transform patterns for internal use.
-   * @param {string|array} patterns
-   * @param {boolean} caseSensitive
-   */
-  transformPatterns(patterns, caseSensitive = false, isRegex = true) {
-    if (!patterns) {
-      return []
-    }
-
-    if (
-      typeof patterns === 'string' ||
-      typeof patterns === 'number' ||
-      Array.isArray(patterns)
-    ) {
-      patterns = { main: patterns }
-    }
-
-    const parsed = Object.keys(patterns).reduce((parsed, key) => {
-      parsed[caseSensitive ? key : key.toLowerCase()] = toArray(
-        patterns[key]
-      ).map((pattern) => Wappalyzer.parsePattern(pattern, isRegex))
-
-      return parsed
-    }, {})
-
-    return 'main' in parsed ? parsed.main : parsed
-  },
-
-  /**
-   * Extract information from regex pattern.
-   * @param {string|object} pattern
-   */
-  parsePattern(pattern, isRegex = true) {
-    if (typeof pattern === 'object') {
-      return Object.keys(pattern).reduce(
-        (parsed, key) => ({
-          ...parsed,
-          [key]: Wappalyzer.parsePattern(pattern[key]),
-        }),
-        {}
-      )
-    } else {
-      const { value, regex, confidence, version } = pattern
-        .toString()
-        .split('\\;')
-        .reduce((attrs, attr, i) => {
-          if (i) {
-            // Key value pairs
-            attr = attr.split(':')
-
-            if (attr.length > 1) {
-              attrs[attr.shift()] = attr.join(':')
-            }
-          } else {
-            attrs.value = typeof pattern === 'number' ? pattern : attr
-
-            attrs.regex = new RegExp(
-              isRegex
-                ? attr
-                    // Escape slashes
-                    .replace(/\//g, '\\/')
-                    // Optimise quantifiers for long strings
-                    .replace(/\\\+/g, '__escapedPlus__')
-                    .replace(/\+/g, '{1,250}')
-                    .replace(/\*/g, '{0,250}')
-                    .replace(/__escapedPlus__/g, '\\+')
-                : '',
-              'i'
-            )
-          }
-
-          return attrs
-        }, {})
-
-      return {
-        value,
-        regex,
-        confidence: parseInt(confidence || 100, 10),
-        version: version || '',
-      }
-    }
-  },
-
-  /**
-   * @todo describe
-   * @param {Object} technology
-   * @param {String} type
-   * @param {String} value
-   */
-  analyzeOneToOne(technology, type, value) {
-    return technology[type].reduce((technologies, pattern) => {
-      const startTime = Date.now()
-
-      const matches = __execMemo(pattern.regex, value)
-
-      if (matches) {
-        technologies.push({
-          technology,
-          pattern: {
-            ...pattern,
-            type,
-            value,
-            match: matches[0],
-          },
-          version: Wappalyzer.resolveVersion(pattern, value),
-        })
-      }
-
-      benchmark(Date.now() - startTime, pattern, value, technology)
-
-      return technologies
-    }, [])
-  },
-
-  /**
-   * @todo update
-   * @param {Object} technology
-   * @param {String} type
-   * @param {Array} items
-   */
-  analyzeOneToMany(technology, type, items = []) {
-    return items.reduce((technologies, value) => {
-      const patterns = technology[type] || []
-
-      patterns.forEach((pattern) => {
-        const startTime = Date.now()
-
-        const matches = __execMemo(pattern.regex, value)
-
-        if (matches) {
-          technologies.push({
-            technology,
-            pattern: {
-              ...pattern,
-              type,
-              value,
-              match: matches[0],
-            },
-            version: Wappalyzer.resolveVersion(pattern, value),
-          })
         }
-
-        benchmark(Date.now() - startTime, pattern, value, technology)
       })
+      .sort(({ priority: a }, { priority: b }) => (a > b ? -1 : 0))
+  }
 
-      return technologies
-    }, [])
-  },
+  transformPatterns(patterns, caseSensitive = false, isRegex = true) {
+    return transformPatterns(patterns, caseSensitive, isRegex)
+  }
 
-  /**
-   *
-   * @param {Object} technology
-   * @param {string} types
-   * @param {Array} items
-   */
+  parsePattern(pattern, isRegex = true) {
+    return parsePattern(pattern, isRegex)
+  }
+
+  analyzeOneToOne(technology, type, value) {
+    return analyzeOneToOne(technology, type, value, {
+      execMatch: (regex, input) => this.matchMemo.exec(regex, input),
+      resolveVersion: (pattern, input) => this.resolveVersion(pattern, input),
+      benchmark: (duration, pattern, input, tech) =>
+        this.benchmarks.record(duration, pattern, input, tech),
+    })
+  }
+
+  analyzeOneToMany(technology, type, items = []) {
+    return analyzeOneToMany(technology, type, items, {
+      execMatch: (regex, value) => this.matchMemo.exec(regex, value),
+      resolveVersion: (pattern, value) => this.resolveVersion(pattern, value),
+      benchmark: (duration, pattern, value, tech) =>
+        this.benchmarks.record(duration, pattern, value, tech),
+    })
+  }
+
   analyzeManyToMany(technology, types, items = {}) {
-    if (!technology || typeof technology !== 'object') return []
-    const [type, ...subtypes] = types.split('.')
-    if (!technology[type] || typeof technology[type] !== 'object') return []
+    return analyzeManyToMany(technology, types, items, {
+      execMatch: (regex, value) => this.matchMemo.exec(regex, value),
+      resolveVersion: (pattern, value) => this.resolveVersion(pattern, value),
+      benchmark: (duration, pattern, value, tech) =>
+        this.benchmarks.record(duration, pattern, value, tech),
+    })
+  }
 
-    return Object.keys(technology[type]).reduce((technologies, key) => {
-      const patterns = technology[type][key] || []
-      const values = items[key] || []
+  __getMatchMemoSize() {
+    return this.matchMemo.size()
+  }
 
-      patterns.forEach((_pattern) => {
-        const pattern = (subtypes || []).reduce(
-          (pattern, subtype) => pattern[subtype] || {},
-          _pattern
-        )
+  __clearMatchMemo() {
+    this.matchMemo.clear()
+  }
+}
 
-        values.forEach((value) => {
-          const startTime = Date.now()
+const coreInstance = new WappalyzerCore()
 
-          const matches = __execMemo(pattern.regex, value)
+const Wappalyzer = {}
 
-          if (matches) {
-            technologies.push({
-              technology,
-              pattern: {
-                ...pattern,
-                type,
-                value,
-                match: matches[0],
-                origKey: key,
-              },
-              version: Wappalyzer.resolveVersion(pattern, value),
-            })
-          }
-
-          benchmark(Date.now() - startTime, pattern, value, technology)
-        })
-      })
-
-      return technologies
-    }, [])
+Object.defineProperty(Wappalyzer, 'technologies', {
+  get() {
+    return coreInstance.technologies
   },
-}
+  set(value) {
+    coreInstance.technologies = value
+    coreInstance._technologyByName = new Map(
+      (value || []).map((technology) => [technology && technology.name, technology]).filter(([name]) => Boolean(name))
+    )
+  },
+  enumerable: true,
+  configurable: true,
+})
 
-Wappalyzer.__getMatchMemoSize = __getMatchMemoSize
-Wappalyzer.__clearMatchMemo = __clearMatchMemo
+Object.defineProperty(Wappalyzer, 'categories', {
+  get() {
+    return coreInstance.categories
+  },
+  set(value) {
+    coreInstance.categories = value
+  },
+  enumerable: true,
+  configurable: true,
+})
 
-if (typeof module !== 'undefined') {
-  module.exports = Wappalyzer
-}
+Object.defineProperty(Wappalyzer, 'requires', {
+  get() {
+    return coreInstance.requires
+  },
+  set(value) {
+    coreInstance.requires = value
+  },
+  enumerable: true,
+  configurable: true,
+})
+
+Object.defineProperty(Wappalyzer, 'categoryRequires', {
+  get() {
+    return coreInstance.categoryRequires
+  },
+  set(value) {
+    coreInstance.categoryRequires = value
+  },
+  enumerable: true,
+  configurable: true,
+})
+
+Object.assign(Wappalyzer, {
+  slugify: (string) => coreInstance.slugify(string),
+  getTechnology: (name) => coreInstance.getTechnology(name),
+  getCategory: (id) => coreInstance.getCategory(id),
+  resolve: (detections) => coreInstance.resolve(detections),
+  resolveVersion: (pattern, match) => coreInstance.resolveVersion(pattern, match),
+  analyze: (items, technologies) => coreInstance.analyze(items, technologies),
+  analyzeOneToOne: (technology, type, value) =>
+    coreInstance.analyzeOneToOne(technology, type, value),
+  analyzeOneToMany: (technology, type, items) =>
+    coreInstance.analyzeOneToMany(technology, type, items),
+  analyzeManyToMany: (technology, types, items) =>
+    coreInstance.analyzeManyToMany(technology, types, items),
+  setTechnologies: (data) => coreInstance.setTechnologies(data),
+  setCategories: (data) => coreInstance.setCategories(data),
+  transformPatterns: (patterns, caseSensitive, isRegex) =>
+    coreInstance.transformPatterns(patterns, caseSensitive, isRegex),
+  parsePattern: (pattern, isRegex) => coreInstance.parsePattern(pattern, isRegex),
+  __getMatchMemoSize: () => coreInstance.__getMatchMemoSize(),
+  __clearMatchMemo: () => coreInstance.__clearMatchMemo(),
+})
+
+Wappalyzer.WappalyzerCore = WappalyzerCore
+
+module.exports = Wappalyzer
