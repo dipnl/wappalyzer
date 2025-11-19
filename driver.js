@@ -1424,19 +1424,22 @@ class Site {
       .concat(detections)
       .filter(
         (
-          { technology: { name }, pattern: { regex, type }, version },
+          { technology: { name }, pattern: { regex, type, origKey }, version },
           index,
           detections
         ) =>
           detections.findIndex(
             ({
               technology: { name: _name },
-              pattern: { regex: _regex, type: _type },
+              pattern: { regex: _regex, type: _type, origKey: _origKey },
               version: _version,
             }) =>
               type === _type &&
               name === _name &&
               version === _version &&
+              (origKey !== undefined || _origKey !== undefined
+                ? origKey === _origKey
+                : true) &&
               (!regex || regex.toString() === _regex.toString())
           ) === index
       )
