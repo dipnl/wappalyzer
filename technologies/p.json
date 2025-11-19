@@ -1745,21 +1745,53 @@
     "saas": true,
     "website": "https://piwigo.com"
   },
+
   "Piwik PRO Core": {
-    "cats": [
-      10
-    ],
-    "description": "Piwik PRO Core is a free alternative to Google Analytics that is privacy & compliance focused.",
-    "excludes": "Matomo Analytics",
-    "icon": "Piwik PRO Core.svg",
-    "pricing": [
-      "freemium",
-      "poa"
-    ],
-    "saas": true,
-    "scriptSrc": "\\.piwik\\.pro/",
-    "website": "https://piwik.pro"
-  },
+        "cats": [10],
+        "cookieNames": [
+            "^_pk_id\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[0-9a-fA-F]{4}$\\;confidence:50",
+            "^_pk_ses\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[0-9a-fA-F]{4}$\\;confidence:50",
+            "stg_traffic_source_priority\\;confidence:25",
+            "stg_last_interaction\\;confidence:25",
+            "stg_returning_visitor\\;confidence:25"
+        ],
+        "description": "Piwik PRO Core is a free alternative to Google Analytics that is privacy & compliance focused.",
+        "icon": "Piwik PRO Core.svg",
+        "pricing": [
+            "freemium",
+            "poa"
+        ],
+        "saas": true,
+        "js": {
+            "ppms": "\\;confidence:50",
+            "sevenTag": "\\;confidence:50",
+            "wgxpath": "\\;confidence:25"
+        },
+        "website": "https://piwik.pro"
+    },
+"Matomo Analytics": {
+        "example": "2023-10-30 https://www.weststellingwerf.nl",
+        "cats": [10],
+        "cookieNames": [
+            "^_pk_id\\.[0-9]+\\.[0-9a-fA-F]{4}$\\;confidence:50",
+            "^_pk_ses\\.[0-9]+\\.[0-9a-fA-F]{4}$\\;confidence:50"
+        ],
+        "cpe": "cpe:2.3:a:matomo:matomo:*:*:*:*:*:*:*:*",
+        "description": "Matomo Analytics is a free and open-source web analytics application, that runs on a PHP/MySQL web-server.",
+        "icon": "Matomo.svg",
+        "js": {
+            "Matomo": "\\;confidence:50"
+        },
+        "oss": true,
+        "pricing": [
+            "freemium"
+        ],
+        "scriptSrc": [
+            "(?:cdn\\.)?matomo\\.cloud/(?:[^/]+/)?(?:matomo|piwik)\\.js\\;confidence:50",
+            "(?:cdn\\.)?matomo\\.cloud/[^/]+/container_[a-zA-Z0-9]+\\.js\\;confidence:50"
+        ],
+        "website": "https://matomo.org"
+    },
   "Pixc": {
     "cats": [
       19

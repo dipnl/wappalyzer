@@ -120,13 +120,26 @@ function getJs(page, technologies = Wappalyzer.technologies) {
 }
 
 function analyzeJs(js, technologies = Wappalyzer.technologies) {
-  return js
-    .map(({ name, chain, value }) => {
-      return analyzeManyToMany(
-        technologies.find(({ name: _name }) => name === _name),
-        'js',
-        { [chain]: [value] }
-      )
+  // Group JS chains by technology name
+  const grouped = js.reduce((acc, { name, chain, value }) => {
+    if (!acc[name]) {
+      acc[name] = {}
+    }
+    if (!acc[name][chain]) {
+      acc[name][chain] = []
+    }
+    acc[name][chain].push(value)
+    return acc
+  }, {})
+
+  // Process each technology with all its chains together
+  return Object.keys(grouped)
+    .map((name) => {
+      const technology = technologies.find(({ name: _name }) => name === _name)
+      if (!technology) {
+        return []
+      }
+      return analyzeManyToMany(technology, 'js', grouped[name])
     })
     .flat()
 }
@@ -1424,19 +1437,22 @@ class Site {
       .concat(detections)
       .filter(
         (
-          { technology: { name }, pattern: { regex, type }, version },
+          { technology: { name }, pattern: { regex, type, origKey }, version },
           index,
           detections
         ) =>
           detections.findIndex(
             ({
               technology: { name: _name },
-              pattern: { regex: _regex, type: _type },
+              pattern: { regex: _regex, type: _type, origKey: _origKey },
               version: _version,
             }) =>
               type === _type &&
               name === _name &&
               version === _version &&
+              (origKey !== undefined || _origKey !== undefined
+                ? origKey === _origKey
+                : true) &&
               (!regex || regex.toString() === _regex.toString())
           ) === index
       )
