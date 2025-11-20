@@ -1437,9 +1437,7 @@ class Site {
               type === _type &&
               name === _name &&
               version === _version &&
-              (origKey !== undefined || _origKey !== undefined
-                ? origKey === _origKey
-                : true) &&
+              origKey === _origKey &&
               (!regex || regex.toString() === _regex.toString())
           ) === index
       )
