@@ -89,6 +89,7 @@ Options:
   -P, --pretty               Pretty-print JSON output
   --proxy=...                Proxy URL, e.g. 'http://user:pass@proxy:8080'
   -r, --recursive            Follow links on pages (crawler)
+  --random-recursive         Follow random links, instead of in DOM order
   -a, --user-agent=...       Set the user agent string
   -n, --no-scripts           Disabled JavaScript on web pages
   -N, --no-redirect          Disable cross-domain redirects

@@ -1070,6 +1070,10 @@ class Site {
         []
       )
 
+      if (this.driver.options.randomRecursive) {
+        reducedLinks.sort(() => Math.random() > 0.5 ? -1 : 1)
+      }
+
       await this.emit('goto', {
         page,
         url,
