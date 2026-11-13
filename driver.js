@@ -396,14 +396,12 @@ class Driver {
       try {
         if (CHROMIUM_WEBSOCKET) {
           this.browser = await puppeteer.connect({
-            ignoreHTTPSErrors: true,
             acceptInsecureCerts: true,
             browserWSEndpoint: CHROMIUM_WEBSOCKET,
           })
         } else {
           this.browser = await puppeteer.launch({
             headless: 'new',
-            ignoreHTTPSErrors: true,
             acceptInsecureCerts: true,
             args: chromiumArgs,
             executablePath: CHROMIUM_BIN,
@@ -452,7 +450,9 @@ class Driver {
 
       try {
         this.log('Clearing cookies...');
-        await page._client().send('Network.clearBrowserCookies');
+        const context = page.browserContext();
+        const existingCookies = await context.cookies();
+        await context.deleteCookie(...existingCookies);
       }
       catch (ex) {
         this.log(ex);
@@ -795,8 +795,8 @@ class Site {
       let cookies = {}
       let cookieNames = []
       try {
-        const cookieResponse = await page._client().send('Network.getAllCookies');
-        cookieResponse.cookies.forEach(cookie => {
+        const contextCookies = await page.browserContext().cookies();
+        contextCookies.forEach(cookie => {
           cookies[cookie.name.toLowerCase()] = [cookie.value];
           cookieNames.push(cookie.name);
         });

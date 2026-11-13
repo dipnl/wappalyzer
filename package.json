@@ -32,9 +32,9 @@
     "wappalyzer": "./cli.js"
   },
   "dependencies": {
-    "puppeteer": "^24"
+    "puppeteer": "^25"
   },
   "engines": {
-    "node": ">=21"
+    "node": ">=22"
   }
 }
